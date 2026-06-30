@@ -32,7 +32,7 @@ with open(CONFIG_PATH, "r") as f:
 # Extract Paths
 source_input_dir = Path(config_data["paths"]["source_input_dir"])
 output_dir = Path(config_data["paths"]["output_dir"])
-input_dir = output_dir  # Input directory matches output directory for script chain dependencie
+input_dir = output_dir  # Input directory matches output directory for script chain dependencies
 
 #in case directory does not exist
 output_dir.mkdir(parents=True, exist_ok=True)
