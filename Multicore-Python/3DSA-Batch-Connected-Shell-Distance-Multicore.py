@@ -11,13 +11,37 @@ from scipy.spatial import cKDTree
 import time
 import sys
 import multiprocessing
+import json
 
 # --- Configurations ---
 ql_dilation = 1
-num_cores = 3  # Configured for 3 parallel worker processes
-input_dir = Path("/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area")
-output_dir = Path("/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area")
+num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
+
+# --- Setting up directories from config ---
+SCRIPT_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+if not CONFIG_PATH.is_file():
+    print(f"❌ ERROR: Configuration file missing at: {CONFIG_PATH}", file=sys.stderr)
+    sys.exit(1)
+
+# Read json config file
+with open(CONFIG_PATH, "r") as f:
+    config_data = json.load(f)
+
+# Extract Paths
+source_input_dir = Path(config_data["paths"]["source_input_dir"])
+output_dir = Path(config_data["paths"]["output_dir"])
+input_dir = output_dir  # Input directory matches output directory for script chain dependencie
+
+#in case directory does not exist
 output_dir.mkdir(parents=True, exist_ok=True)
+
+print(f"Initialization Success:")
+print(f" -> Source Input Path: {source_input_dir}")
+print(f" -> Output Path:       {output_dir}")
+print(f" -> Active CPU Cores:  {num_cores}")
+print("-" * 50)
 
 export_registry = {
     "true_shell_distance.nc": ("distance", "f4"),
