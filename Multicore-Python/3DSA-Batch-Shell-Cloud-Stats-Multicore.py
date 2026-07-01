@@ -1,0 +1,259 @@
+import os
+import math
+import numpy as np
+import xarray as xr
+import scipy.ndimage
+from pathlib import Path
+import netCDF4 as nc
+import scipy.linalg
+import time
+import sys
+import multiprocessing
+import json
+import gc
+import metpy
+from metpy.units import units
+import metpy.calc as mpcalc
+
+# =====================================================================
+# GLOBAL CONFIGURATION & SHARED REGISTRY
+# =====================================================================
+EXPORT_REGISTRY = {
+    "shell_origin.nc": ("shell_origin", "f4"),
+    "shell_termination.nc": ("shell_termination", "f4"),
+    "shell_depth.nc": ("shell_depth", "f4"),
+    "cloud_base.nc": ("cloud_base", "f4"),
+    "cloud_top.nc": ("cloud_top", "f4"),
+    "cloud_depth.nc": ("cloud_depth", "f4"),
+    "shallow_mask.nc": ("shallow_mask", "u1"),
+    "congestus_mask.nc": ("congestus_mask", "u1"),
+    "deep_mask.nc": ("deep_mask", "u1")
+}
+
+
+# --- Multiprocessing Worker Function ---
+def process_timestep_worker(args):
+    """
+    Worker task running on an isolated core. Computes connected-component components 
+    and returns localized numpy matrices back to the orchestrator thread.
+    """
+    start_time = time.time()
+    t, cfg = args
+
+    paths = cfg["paths"]
+    z_coordinates = cfg["z_coordinates"]
+
+    #load datasets
+    with xr.open_dataset(paths["cloud_labels"], decode_times=False, engine="netcdf4") as ds_cloud_labels, \
+         xr.open_dataset(paths["shell_labels"], decode_times=False, engine="netcdf4") as ds_shell_labels:
+
+        cloud_labels_slice = ds_cloud_labels.cloud_labels.isel(time=t).compute().values
+        shell_labels_slice = ds_shell_labels.shell_labels.isel(time=t).compute().values
+
+    #initialize local arrays for this timestep
+    local_shell_origin = np.zeros_like(shell_labels_slice, dtype=np.float32)
+    local_shell_termination = np.zeros_like(shell_labels_slice, dtype=np.float32)
+    local_shell_depth = np.zeros_like(shell_labels_slice, dtype=np.float32)
+    local_cloud_bottom = np.zeros_like(shell_labels_slice, dtype=np.float32)
+    local_cloud_top = np.zeros_like(shell_labels_slice, dtype=np.float32)
+    local_cloud_depth = np.zeros_like(shell_labels_slice, dtype=np.float32)
+    local_congestus_mask = np.zeros_like(shell_labels_slice, dtype=bool)
+    local_deep_mask = np.zeros_like(shell_labels_slice, dtype=bool)
+    local_shallow_mask = np.zeros_like(shell_labels_slice, dtype=bool)
+
+    matching_labels = set(np.unique(cloud_labels_slice))
+    matching_labels.discard(0)
+    timestep_data = {}
+    if matching_labels:
+        #Stats calc
+        for obj_id in matching_labels:
+            cloud_mask = (cloud_labels_slice == obj_id)
+            shell_mask = (shell_labels_slice == obj_id)
+            combined_obj_mask = cloud_mask | shell_mask
+
+            cloud_z_indices = np.where(cloud_mask)[0]
+            shell_z_indices = np.where(shell_mask)[0]
+
+            # Initialize default values for this object
+            min_z_shell = np.nan
+            max_z_shell = np.nan
+            shell_depth = np.nan
+            min_z_cloud = np.nan
+            max_z_cloud = np.nan
+            cloud_depth = np.nan
+            classification = "shallow"
+
+            if shell_z_indices.size > 0:
+                min_z_shell = z_coordinates[shell_z_indices.min()]
+                max_z_shell = z_coordinates[shell_z_indices.max()]
+                shell_depth = max_z_shell - min_z_shell
+
+                local_shell_origin[combined_obj_mask] = min_z_shell
+                local_shell_termination[combined_obj_mask] = max_z_shell
+                local_shell_depth[combined_obj_mask] = shell_depth
+
+            if cloud_z_indices.size > 0:
+                min_z_cloud = z_coordinates[cloud_z_indices.min()]
+                max_z_cloud = z_coordinates[cloud_z_indices.max()]
+                cloud_depth = max_z_cloud - min_z_cloud
+
+                local_cloud_bottom[combined_obj_mask] = min_z_cloud
+                local_cloud_top[combined_obj_mask] = max_z_cloud
+                local_cloud_depth[combined_obj_mask] = cloud_depth  
+                
+                if max_z_cloud > 5000: #cloud is deep
+                    classification = "deep"
+                    local_deep_mask[combined_obj_mask] = True
+                elif max_z_cloud > 2000: #cloud is congestus
+                    classification = "congestus"
+                    local_congestus_mask[combined_obj_mask] = True
+                else: #cloud is shallow
+                    classification = "shallow"
+                    local_shallow_mask[combined_obj_mask] = True
+
+            timestep_data[int(obj_id)] = {
+                "cloud_base": float(min_z_cloud) if not np.isnan(min_z_cloud) else None,
+                "cloud_top": float(max_z_cloud) if not np.isnan(max_z_cloud) else None,
+                "cloud_depth": float(cloud_depth) if not np.isnan(cloud_depth) else None,
+                "shell_origin": float(min_z_shell) if not np.isnan(min_z_shell) else None,
+                "shell_termination": float(max_z_shell) if not np.isnan(max_z_shell) else None,
+                "shell_depth": float(shell_depth) if not np.isnan(shell_depth) else None,
+                "class": classification
+            }
+        
+
+    # --- Exporting ---
+    elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
+    return t, {
+        "shell_origin.nc": local_shell_origin,
+        "shell_termination.nc": local_shell_termination,
+        "shell_depth.nc": local_shell_depth,
+        "cloud_base.nc": local_cloud_bottom,
+        "cloud_top.nc": local_cloud_top,
+        "cloud_depth.nc": local_cloud_depth,
+        "shallow_mask.nc": local_shallow_mask.astype(np.uint8),
+        "congestus_mask.nc": local_congestus_mask.astype(np.uint8),
+        "deep_mask.nc": local_deep_mask.astype(np.uint8),
+        "timestep_data": timestep_data,
+        "duration": elapsed_str,
+    }
+
+
+# --- Main Thread ---
+if __name__ == '__main__':
+    # --- Configurations ---
+    num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
+
+    # --- Setting up directories from config ---
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+    if not CONFIG_PATH.is_file():
+        print(f"❌ ERROR: Configuration file missing at: {CONFIG_PATH}", file=sys.stderr)
+        sys.exit(1)
+
+    # Read json config file
+    with open(CONFIG_PATH, "r") as f:
+        config_data = json.load(f)
+
+    # Extract Paths
+    output_dir = Path(config_data["paths"]["output_dir"])
+    input_dir = output_dir
+
+    #in case directory does not exist
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Initialization Success:")
+    print(f" -> Input Path: {input_dir}")
+    print(f" -> Output Path:       {output_dir}")
+    print(f" -> Active CPU Cores:  {num_cores}")
+    print("-" * 50)
+
+    print("Checking file dependencies...")
+    file_paths = {
+        "shell_labels": input_dir / "shell_labels.nc",
+        "cloud_labels": input_dir / "cloud_labels.nc",
+    }
+    #Check that files exist
+    for name, path in file_paths.items():
+        if not path.is_file():
+            print(f"❌ ERROR: Missing target dependency: {path}", file=sys.stderr)
+            sys.exit(1)
+
+    # Global structure
+    with xr.open_dataset(file_paths["shell_labels"], decode_times=False, engine="netcdf4") as ds_meta:
+        num_times = int(ds_meta.time.size)
+        nz, ny, nx = ds_meta.shell_labels.shape[1:]
+        time_vals = ds_meta.time.values
+        z_vals = ds_meta.z.values
+        y_vals = ds_meta.y.values
+        x_vals = ds_meta.x.values
+        dx = float(ds_meta.x[1] - ds_meta.x[0])
+        dy = float(ds_meta.y[1] - ds_meta.y[0])
+
+
+    # --- Preallocate NetCDF file structures ---
+    open_files = {}
+    print("Pre-allocating NetCDF file structures on disk...")
+    for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
+        file_path = output_dir / filename
+        f = nc.Dataset(str(file_path), "w", format="NETCDF4")
+        open_files[filename] = f
+        f.createDimension("time", num_times)
+        f.createDimension("z", nz)
+        f.createDimension("y", ny)
+        f.createDimension("x", nx)
+        
+        f.createVariable("time", "f8", ("time",))[:] = time_vals
+        f.createVariable("z", "f4", ("z",))[:] = z_vals
+        f.createVariable("y", "f4", ("y",))[:] = y_vals
+        f.createVariable("x", "f4", ("x",))[:] = x_vals
+        
+        var = f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
+                            zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
+        
+        if data_type == "u1":
+            var.setncattr("_Unsigned", "true")
+
+    all_timesteps_data = {}
+    # --- Start Worker Pool ---
+    # Package arguments cleanly into a metadata dictionary
+    worker_config = {
+        "paths": {k: str(v) for k, v in file_paths.items()},
+        "dx": dx,
+        "dy": dy,
+        "z_coordinates": z_vals
+    }
+
+    print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
+    pool_tasks = [(t, worker_config) for t in range(num_times)]
+
+    with multiprocessing.Pool(processes=num_cores) as pool:
+        for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+            print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+            
+            for filename, data_array in payload.items():
+                if filename == "duration":
+                    continue
+                if filename == "timestep_data":
+                    all_timesteps_data[t_idx] = data_array
+                    continue
+                var_key = EXPORT_REGISTRY[filename][0]
+                open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
+                open_files[filename].sync()
+
+            gc.collect()
+
+    # Save nested structured metadata dictionary as a JSON file
+    if all_timesteps_data:
+        json_path = output_dir / "shell_cloud_height_stats.json"
+        with open(json_path, "w") as jf:
+            json.dump(all_timesteps_data, jf, indent=4)
+        print(f"✅ Successfully saved nested object tracking metadata to:\n   {json_path}")
+    else:
+        print("\n⚠️ No object tracking statistics were collected across the simulation.")
+
+    for file_obj in open_files.values():
+        file_obj.close()
+
+    print("\n✅ All computation and exporting complete (Program is safe to close)")

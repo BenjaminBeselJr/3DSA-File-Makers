@@ -7,8 +7,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=10:00:00
 #SBATCH --partition=long
-#SBATCH --error=nql-job.err
-#SBATCH --output=nql-job.out
+#SBATCH --error=c-stats-job.err
+#SBATCH --output=c-stats-job.out
 #SBATCH --mem=0
 module list
 

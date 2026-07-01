@@ -7,8 +7,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=10:00:00
 #SBATCH --partition=long
-#SBATCH --error=job.err
-#SBATCH --output=job.out
+#SBATCH --error=main-job.err
+#SBATCH --output=main-job.out
 #SBATCH --mem=0
 module list
 

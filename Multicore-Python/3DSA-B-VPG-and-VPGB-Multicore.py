@@ -122,10 +122,10 @@ def process_timestep_worker(args):
 
 
     #load datasets
-    with xr.open_dataset(paths["ql"], decode_times=False) as ds_ql, \
-         xr.open_dataset(paths["qt"], decode_times=False) as ds_qt, \
-         xr.open_dataset(paths["thl"], decode_times=False) as ds_thl, \
-         xr.open_dataset(paths["p"], decode_times=False) as ds_p:
+    with xr.open_dataset(paths["ql"], decode_times=False, engine="netcdf4") as ds_ql, \
+         xr.open_dataset(paths["qt"], decode_times=False, engine="netcdf4") as ds_qt, \
+         xr.open_dataset(paths["thl"], decode_times=False, engine="netcdf4") as ds_thl, \
+         xr.open_dataset(paths["p"], decode_times=False, engine="netcdf4") as ds_p:
          
         p_slice = ds_p.p.isel(time=t)
         ql_slice = ds_ql.ql.isel(time=t)
@@ -233,7 +233,7 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["ql"], decode_times=False) as ds_meta:
+    with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta:
         num_times = int(ds_meta.time.size)
         nz, ny, nx = ds_meta.ql.shape[1:]
         time_vals = ds_meta.time.values
@@ -254,10 +254,12 @@ if __name__ == '__main__':
     rho_profile = ds_initial_thermo.rhoref.values
 
     #-create th-
-    init_th_profile = mpcalc.potential_temperature(
+    init_th_raw = mpcalc.potential_temperature(
         ds_initial_general.p.values * units.pascal, 
         ds_initial_thermo.T.values * units.kelvin
-    ).magnitude
+    )
+
+    init_th_profile = np.asarray(init_th_raw.magnitude, dtype=np.float32)
 
     # Replace any top-of-atmosphere Infs or NaNs with standard neighboring numbers
     init_th_profile = np.nan_to_num(init_th_profile, nan=300.0, posinf=300.0, neginf=300.0)
@@ -267,22 +269,24 @@ if __name__ == '__main__':
         init_th_profile[-1] = init_th_profile[-2]
 
     # --- Preallocate NetCDF file structures ---
+    open_files = {}
     print("Pre-allocating NetCDF file structures on disk...")
     for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
         file_path = output_dir / filename
-        with nc.Dataset(str(file_path), "w", format="NETCDF4") as f:
-            f.createDimension("time", num_times)
-            f.createDimension("z", nz)
-            f.createDimension("y", ny)
-            f.createDimension("x", nx)
-            
-            f.createVariable("time", "f8", ("time",))[:] = time_vals
-            f.createVariable("z", "f4", ("z",))[:] = z_vals
-            f.createVariable("y", "f4", ("y",))[:] = y_vals
-            f.createVariable("x", "f4", ("x",))[:] = x_vals
-            
-            f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
-                             zlib=True, complevel=4, chunksizes=(1, nz, ny, nx), fill_value=False)
+        f = nc.Dataset(str(file_path), "w", format="NETCDF4")
+        open_files[filename] = f
+        f.createDimension("time", num_times)
+        f.createDimension("z", nz)
+        f.createDimension("y", ny)
+        f.createDimension("x", nx)
+        
+        f.createVariable("time", "f8", ("time",))[:] = time_vals
+        f.createVariable("z", "f4", ("z",))[:] = z_vals
+        f.createVariable("y", "f4", ("y",))[:] = y_vals
+        f.createVariable("x", "f4", ("x",))[:] = x_vals
+        
+        f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
+                            zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
 
     # --- Start Worker Pool ---
     # Package arguments cleanly into a metadata dictionary
@@ -295,7 +299,6 @@ if __name__ == '__main__':
     }
 
     print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-    open_files = {fname: nc.Dataset(str(output_dir / fname), "a") for fname in EXPORT_REGISTRY}
     pool_tasks = [(t, worker_config) for t in range(num_times)]
 
     with multiprocessing.Pool(processes=num_cores) as pool:

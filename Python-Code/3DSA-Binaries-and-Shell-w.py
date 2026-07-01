@@ -54,29 +54,29 @@ export_registry = {
 }
 #create blank datasets on memory
 print("Pre-allocating NetCDF file structures on disk...")
+open_files = {}
 for filename, (var_name, data_type) in export_registry.items():
     file_path = str(output_dir / filename)
-    with nc.Dataset(file_path, "w", format="NETCDF4") as f:
-        f.createDimension("time", num_times)
-        f.createDimension("z", nz)
-        f.createDimension("y", ny)
-        f.createDimension("x", nx)
-        
-        t_v = f.createVariable("time", "f8", ("time",))
-        z_v = f.createVariable("z", "f4", ("z",))
-        y_v = f.createVariable("y", "f4", ("y",))
-        x_v = f.createVariable("x", "f4", ("x",))
-        
-        t_v[:] = ds_ql.time.values
-        z_v[:] = ds_ql.z.values
-        y_v[:] = ds_ql.y.values
-        x_v[:] = ds_ql.x.values
-        
-        f.createVariable(var_name, data_type, ("time", "z", "y", "x"), zlib=True, complevel=4, chunksizes=(1, nz, ny, nx), fill_value=False)
+    f = nc.Dataset(file_path, "w", format="NETCDF4")
+    open_files[filename] = f
+    f.createDimension("time", num_times)
+    f.createDimension("z", nz)
+    f.createDimension("y", ny)
+    f.createDimension("x", nx)
+    
+    t_v = f.createVariable("time", "f8", ("time",))
+    z_v = f.createVariable("z", "f4", ("z",))
+    y_v = f.createVariable("y", "f4", ("y",))
+    x_v = f.createVariable("x", "f4", ("x",))
+    
+    t_v[:] = ds_ql.time.values
+    z_v[:] = ds_ql.z.values
+    y_v[:] = ds_ql.y.values
+    x_v[:] = ds_ql.x.values
+    
+    f.createVariable(var_name, data_type, ("time", "z", "y", "x"), zlib=True, complevel=4, chunksizes=(1, nz, ny, nx), fill_value=False)
 
 #Creating masks and shell w
-#open blank arrays created earlier
-open_files = {fname: nc.Dataset(str(output_dir / fname), "a") for fname in export_registry}
 
 #Prepare grid indicies
 z_grid, y_grid, x_grid = np.indices((nz, ny, nx))
