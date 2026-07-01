@@ -14,7 +14,6 @@ import multiprocessing
 import json
 
 # --- Configurations ---
-ql_dilation = 1
 num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
 
 # --- Setting up directories from config ---
@@ -34,7 +33,7 @@ source_input_dir = Path(config_data["paths"]["source_input_dir"])
 output_dir = Path(config_data["paths"]["output_dir"])
 input_dir = output_dir  # Input directory matches output directory for script chain dependencies
 
-#in case directory does not exist
+# In case directory does not exist
 output_dir.mkdir(parents=True, exist_ok=True)
 
 print(f"Initialization Success:")
@@ -51,7 +50,7 @@ export_registry = {
 }
 
 # --- Multiprocessing Worker Function ---
-def process_connected_ql_timestep(t, input_dir, grid_distance, nz, ny, nx, z_real, box_limits, expansion):
+def process_connected_ql_timestep(t, input_dir, grid_distance, nz, ny, nx, z_real, box_limits):
     """
     Worker task running on an isolated core. Computes connected-component components 
     and returns localized numpy matrices back to the orchestrator thread.
@@ -59,59 +58,31 @@ def process_connected_ql_timestep(t, input_dir, grid_distance, nz, ny, nx, z_rea
     start_time = time.time()
     
     # 1. Read single timestep locally
-    with xr.open_dataset(input_dir / "ql_mask.nc", decode_times=False) as ds_ql:
-        ql_raw = ds_ql.ql_mask.isel(time=t).values.astype(bool)
-    with xr.open_dataset(input_dir / "shell_mask.nc", decode_times=False) as ds_shell:
-        sub_outline = ds_shell.shell_mask.isel(time=t).values.astype(bool)
+    with xr.open_dataset(input_dir / "shell_labels.nc", decode_times=False) as ds_shell_labels:
+        shell_labels = ds_shell_labels.shell_labels.isel(time=t).values.astype(np.uint32)
+    with xr.open_dataset(input_dir / "cloud_labels.nc", decode_times=False) as ds_cloud_labels:
+        cloud_labels = ds_cloud_labels.cloud_labels.isel(time=t).values.astype(np.uint32)
 
     # Initialize tracking targets
-    local_true_dist = np.full_like(ql_raw, np.nan, dtype=np.float32)
-    local_true_dist_vert = np.full_like(ql_raw, np.nan, dtype=np.float32)
-    local_true_shell_relative_alt = np.full_like(ql_raw, np.nan, dtype=np.float32)
-    local_true_dist_horz = np.full_like(ql_raw, np.nan, dtype=np.float32)
+    local_true_dist = np.full_like(shell_labels, np.nan, dtype=np.float32)
+    local_true_dist_vert = np.full_like(shell_labels, np.nan, dtype=np.float32)
+    local_true_shell_relative_alt = np.full_like(shell_labels, np.nan, dtype=np.float32)
+    local_true_dist_horz = np.full_like(shell_labels, np.nan, dtype=np.float32)
 
-    # 2. Extract Connected Components Labeled Regions
-    padded_ql_raw = np.pad(ql_raw, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-    temp_ql_labels = cc3d.connected_components(padded_ql_raw, connectivity=6, periodic_boundary=True)
-    ql_labels = temp_ql_labels[1:-1, :, :]
-    
-    initial_dilated_ql_labels = ql_labels.copy()
-    padded_labels = np.pad(initial_dilated_ql_labels, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-    padded_labels = np.pad(padded_labels, ((0, 0), (ql_dilation, ql_dilation), (ql_dilation, ql_dilation)), mode='wrap')
-    
-    for _ in range(ql_dilation):
-        padded_labels = scipy.ndimage.grey_dilation(padded_labels, footprint=expansion)
-    dilated_ql_labels = padded_labels[1:-1, ql_dilation:-ql_dilation, ql_dilation:-ql_dilation]
-
-    shell_parent_ids = np.where(sub_outline, dilated_ql_labels, 0)
-
-    # 3. Dilation Traversal loop
-    while True:
-        travel_mask = sub_outline & (shell_parent_ids == 0)
-        if not np.any(travel_mask):
-            break
-        
-        padded_shell_ids = np.pad(shell_parent_ids, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-        padded_shell_ids = np.pad(padded_shell_ids, ((0, 0), (1, 1), (1, 1)), mode='wrap')
-        padded_expanded = scipy.ndimage.grey_dilation(padded_shell_ids, footprint=expansion)
-        ql_label_expanded = padded_expanded[1:-1, 1:-1, 1:-1]
-
-        shell_parent_ids[travel_mask] = ql_label_expanded[travel_mask]
-
-    active_cloud_ids = np.unique(shell_parent_ids)
+    active_cloud_ids = np.unique(shell_labels)
     active_cloud_ids = active_cloud_ids[active_cloud_ids != 0]
     total_clouds = len(active_cloud_ids)
 
-    # 4. Process Individual Cloud Geometry via Trees
+    # 2. Process Individual Cloud Geometry via Trees
     # We enforce workers=1 inside the sub-process so it doesn't fight over threads
     for idx, cloud_id in enumerate(active_cloud_ids):
-        parent_cloud = (ql_labels == cloud_id)
-        cloud_z_pts, cloud_y_pts, cloud_x_pts = np.where(parent_cloud)
+        cloud_mask = (cloud_labels == cloud_id)
+        cloud_z_pts, cloud_y_pts, cloud_x_pts = np.where(cloud_mask)
         if len(cloud_x_pts) == 0:
             continue
 
-        cloud_mask = (shell_parent_ids == cloud_id)
-        shell_z_pts, shell_y_pts, shell_x_pts = np.where(cloud_mask)
+        shell_mask = (shell_labels == cloud_id)
+        shell_z_pts, shell_y_pts, shell_x_pts = np.where(shell_mask)
         if len(shell_x_pts) == 0:
             continue
         
@@ -160,29 +131,27 @@ def process_connected_ql_timestep(t, input_dir, grid_distance, nz, ny, nx, z_rea
 # --- Execution Controller Guard ---
 if __name__ == '__main__':
     print("Verifying target datasets...")
-    path_ds_ql_mask = input_dir / "ql_mask.nc"
-    path_ds_shell_mask = input_dir / "shell_mask.nc"
+    path_ds_shell_labels = input_dir / "shell_labels.nc"
+    path_ds_cloud_labels = input_dir / "cloud_labels.nc"
     
-    if not path_ds_ql_mask.is_file() or not path_ds_shell_mask.is_file():
-        print("❌ ERROR: Input simulation arrays are missing.", file=sys.stderr)
+    if not path_ds_shell_labels.is_file():
+        print(f"❌ ERROR: Missing required file: {path_ds_shell_labels}", file=sys.stderr)
+        sys.exit(1)
+    if not path_ds_cloud_labels.is_file():
+        print(f"❌ ERROR: Missing required file: {path_ds_cloud_labels}", file=sys.stderr)
         sys.exit(1)
 
     # Establish environment parameters
-    with xr.open_dataset(path_ds_ql_mask, decode_times=False) as ds_ql_mask:
-        grid_distance = float(ds_ql_mask.x[1] - ds_ql_mask.x[0])
-        num_times = int(ds_ql_mask.time.size)
-        nz, ny, nx = ds_ql_mask.ql_mask.shape[1:]
-        time_vals = ds_ql_mask.time.values
-        z_vals = ds_ql_mask.z.values
-        y_vals = ds_ql_mask.y.values
-        x_vals = ds_ql_mask.x.values
+    with xr.open_dataset(path_ds_cloud_labels, decode_times=False) as ds_cloud_labels:
+        grid_distance = float(ds_cloud_labels.x[1] - ds_cloud_labels.x[0])
+        num_times = int(ds_cloud_labels.time.size)
+        nz, ny, nx = ds_cloud_labels.cloud_labels.shape[1:]
+        time_vals = ds_cloud_labels.time.values
+        z_vals = ds_cloud_labels.z.values
+        y_vals = ds_cloud_labels.y.values
+        x_vals = ds_cloud_labels.x.values
 
     box_limits = np.array([999999.0, ny * grid_distance, nx * grid_distance])
-
-    expansion = np.zeros((3,3,3), dtype=bool)
-    expansion[1, 1, :] = True
-    expansion[1, :, 1] = True
-    expansion[:, 1, 1] = True
 
     # 1. Preallocate blank files
     print("Pre-allocating NetCDF file structures on disk...")
@@ -204,12 +173,11 @@ if __name__ == '__main__':
 
     # 2. Setup Multi-core Pool Execution Structure
     print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-    pool_args = [(t, input_dir, grid_distance, nz, ny, nx, z_vals, box_limits, expansion) for t in range(num_times)]
+    pool_args = [(t, input_dir, grid_distance, nz, ny, nx, z_vals, box_limits) for t in range(num_times)]
     
     open_files = {fname: nc.Dataset(str(output_dir / fname), "a") for fname in export_registry}
 
     with multiprocessing.Pool(processes=num_cores) as pool:
-        # imap_unordered handles dynamic tracking efficiently
         for t, results in pool.starmap(process_connected_ql_timestep, pool_args):
             print(f"Timestep {t}/{num_times - 1} finished in ({results['duration']}) processing {results['cloud_count']} clouds. Committing to files...")
             
