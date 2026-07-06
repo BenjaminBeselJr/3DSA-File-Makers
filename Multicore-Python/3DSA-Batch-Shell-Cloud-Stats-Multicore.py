@@ -191,66 +191,80 @@ if __name__ == '__main__':
 
     # --- Preallocate NetCDF file structures ---
     open_files = {}
-    print("Pre-allocating NetCDF file structures on disk...")
-    for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
-        file_path = output_dir / filename
-        f = nc.Dataset(str(file_path), "w", format="NETCDF4")
-        open_files[filename] = f
-        f.createDimension("time", num_times)
-        f.createDimension("z", nz)
-        f.createDimension("y", ny)
-        f.createDimension("x", nx)
-        
-        f.createVariable("time", "f8", ("time",))[:] = time_vals
-        f.createVariable("z", "f4", ("z",))[:] = z_vals
-        f.createVariable("y", "f4", ("y",))[:] = y_vals
-        f.createVariable("x", "f4", ("x",))[:] = x_vals
-        
-        var = f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
-                            zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
-        
-        if data_type == "u1":
-            var.setncattr("_Unsigned", "true")
-
-    all_timesteps_data = {}
-    # --- Start Worker Pool ---
-    # Package arguments cleanly into a metadata dictionary
-    worker_config = {
-        "paths": {k: str(v) for k, v in file_paths.items()},
-        "dx": dx,
-        "dy": dy,
-        "z_coordinates": z_vals
-    }
-
-    print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-    pool_tasks = [(t, worker_config) for t in range(num_times)]
-
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-            print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+    try:
+        print("Pre-allocating NetCDF file structures on disk...")
+        for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
+            file_path = output_dir / filename
+            f = nc.Dataset(str(file_path), "w", format="NETCDF4")
+            open_files[filename] = f
+            f.createDimension("time", num_times)
+            f.createDimension("z", nz)
+            f.createDimension("y", ny)
+            f.createDimension("x", nx)
             
-            for filename, data_array in payload.items():
-                if filename == "duration":
-                    continue
-                if filename == "timestep_data":
-                    all_timesteps_data[t_idx] = data_array
-                    continue
-                var_key = EXPORT_REGISTRY[filename][0]
-                open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
-                open_files[filename].sync()
+            f.createVariable("time", "f8", ("time",))[:] = time_vals
+            f.createVariable("z", "f4", ("z",))[:] = z_vals
+            f.createVariable("y", "f4", ("y",))[:] = y_vals
+            f.createVariable("x", "f4", ("x",))[:] = x_vals
+            
+            var = f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
+                                zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
+            
+            if data_type == "u1":
+                var.setncattr("_Unsigned", "true")
 
-            gc.collect()
+        all_timesteps_data = {}
+        # --- Start Worker Pool ---
+        # Package arguments cleanly into a metadata dictionary
+        worker_config = {
+            "paths": {k: str(v) for k, v in file_paths.items()},
+            "dx": dx,
+            "dy": dy,
+            "z_coordinates": z_vals
+        }
 
-    # Save nested structured metadata dictionary as a JSON file
-    if all_timesteps_data:
-        json_path = output_dir / "shell_cloud_height_stats.json"
-        with open(json_path, "w") as jf:
-            json.dump(all_timesteps_data, jf, indent=4)
-        print(f"✅ Successfully saved nested object tracking metadata to:\n   {json_path}")
-    else:
-        print("\n⚠️ No object tracking statistics were collected across the simulation.")
+        print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
+        pool_tasks = [(t, worker_config) for t in range(num_times)]
 
-    for file_obj in open_files.values():
-        file_obj.close()
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+                
+                for filename, data_array in payload.items():
+                    if filename == "duration":
+                        continue
+                    if filename == "timestep_data":
+                        all_timesteps_data[t_idx] = data_array
+                        continue
+                    var_key = EXPORT_REGISTRY[filename][0]
+                    open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
+                    open_files[filename].sync()
 
-    print("\n✅ All computation and exporting complete (Program is safe to close)")
+                gc.collect()
+
+        # Save nested structured metadata dictionary as a JSON file
+        if all_timesteps_data:
+            json_path = output_dir / "shell_cloud_height_stats.json"
+            with open(json_path, "w") as jf:
+                json.dump(all_timesteps_data, jf, indent=4)
+            print(f"✅ Successfully saved nested object tracking metadata to:\n   {json_path}")
+        else:
+            print("\n⚠️ No object tracking statistics were collected across the simulation.")
+
+        for file_obj in open_files.values():
+            file_obj.close()
+
+        print("\n✅ All computation and exporting complete (Program is safe to close)")
+    except KeyboardInterrupt:
+        print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
+    finally:
+        # This block ALWAYS runs, ensuring handles are dropped on normal exit OR scancel
+        print("Flushing and closing all NetCDF file handles...")
+        for filename, file_obj in open_files.items():
+            try:
+                file_obj.close()
+                print(f" -> Closed: {filename}")
+            except Exception as e:
+                print(f" -> Error closing {filename}: {e}")
+
+        print("\n✅ All file streams safely disconnected.")

@@ -274,57 +274,71 @@ if __name__ == '__main__':
 
     # --- Preallocate NetCDF file structures ---
     open_files = {}
-    print("Pre-allocating NetCDF file structures on disk...")
-    for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
-        file_path = output_dir / filename
-        f = nc.Dataset(str(file_path), "w", format="NETCDF4")
-        open_files[filename] = f
-        f.createDimension("time", num_times)
-        f.createDimension("z", nz)
-        f.createDimension("y", ny)
-        f.createDimension("x", nx)
-        
-        f.createVariable("time", "f8", ("time",))[:] = time_vals
-        f.createVariable("z", "f4", ("z",))[:] = z_vals
-        f.createVariable("y", "f4", ("y",))[:] = y_vals
-        f.createVariable("x", "f4", ("x",))[:] = x_vals
-        
-        f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
-                            zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
-
-    # --- Start Worker Pool ---
-    # Package arguments cleanly into a metadata dictionary
-    worker_config = {
-        "paths": {k: str(v) for k, v in file_paths.items()},
-        "dx": dx,
-        "dy": dy,
-        "x_vals": x_vals,
-        "y_vals": y_vals,
-        "z_vals": z_vals,
-        "init_th_profile": init_th_profile,  # Raw 1D numpy array
-        "rho_profile": rho_profile,           # Raw 1D numpy array
-        "c_pd": c_pd,                          # Specific heat at constant pressure
-        "du0_dz": du0_dz_profile,           
-        "dv0_dz": dv0_dz_profile  
-    }
-
-    print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-    pool_tasks = [(t, worker_config) for t in range(num_times)]
-
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-            print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+    try:
+        print("Pre-allocating NetCDF file structures on disk...")
+        for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
+            file_path = output_dir / filename
+            f = nc.Dataset(str(file_path), "w", format="NETCDF4")
+            open_files[filename] = f
+            f.createDimension("time", num_times)
+            f.createDimension("z", nz)
+            f.createDimension("y", ny)
+            f.createDimension("x", nx)
             
-            for filename, data_array in payload.items():
-                if filename == "duration":
-                    continue
-                var_key = EXPORT_REGISTRY[filename][0]
-                open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
-                open_files[filename].sync()
+            f.createVariable("time", "f8", ("time",))[:] = time_vals
+            f.createVariable("z", "f4", ("z",))[:] = z_vals
+            f.createVariable("y", "f4", ("y",))[:] = y_vals
+            f.createVariable("x", "f4", ("x",))[:] = x_vals
+            
+            f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
+                                zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
 
-            gc.collect()
+        # --- Start Worker Pool ---
+        # Package arguments cleanly into a metadata dictionary
+        worker_config = {
+            "paths": {k: str(v) for k, v in file_paths.items()},
+            "dx": dx,
+            "dy": dy,
+            "x_vals": x_vals,
+            "y_vals": y_vals,
+            "z_vals": z_vals,
+            "init_th_profile": init_th_profile,  # Raw 1D numpy array
+            "rho_profile": rho_profile,           # Raw 1D numpy array
+            "c_pd": c_pd,                          # Specific heat at constant pressure
+            "du0_dz": du0_dz_profile,           
+            "dv0_dz": dv0_dz_profile  
+        }
 
-    for file_obj in open_files.values():
-        file_obj.close()
+        print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
+        pool_tasks = [(t, worker_config) for t in range(num_times)]
 
-    print("\n✅ All computation and exporting complete (Program is safe to close)")
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+                
+                for filename, data_array in payload.items():
+                    if filename == "duration":
+                        continue
+                    var_key = EXPORT_REGISTRY[filename][0]
+                    open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
+                    open_files[filename].sync()
+
+                gc.collect()
+
+        for file_obj in open_files.values():
+            file_obj.close()
+
+        print("\n✅ All computation and exporting complete (Program is safe to close)")
+    except KeyboardInterrupt:
+        print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
+    finally:
+        # This block ALWAYS runs, ensuring handles are dropped on normal exit OR scancel
+        print("Flushing and closing all NetCDF file handles...")
+        for filename, file_obj in open_files.items():
+            try:
+                file_obj.close()
+                print(f" -> Closed: {filename}")
+            except Exception as e:
+                print(f" -> Error closing {filename}: {e}")
+
+        print("\n✅ All file streams safely disconnected.")

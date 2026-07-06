@@ -163,49 +163,63 @@ if __name__ == '__main__':
 
     # 1. Preallocate blank files
     open_files = {}
-    print("Pre-allocating NetCDF file structures on disk...")
-    for filename, (var_name, data_type) in export_registry.items():
-        file_path = output_dir / filename
-        f = nc.Dataset(str(file_path), "w", format="NETCDF4")
-        open_files[filename] = f
+    try:
+        print("Pre-allocating NetCDF file structures on disk...")
+        for filename, (var_name, data_type) in export_registry.items():
+            file_path = output_dir / filename
+            f = nc.Dataset(str(file_path), "w", format="NETCDF4")
+            open_files[filename] = f
 
-        f.createDimension("time", num_times)
-        f.createDimension("z", nz)
-        f.createDimension("y", ny)
-        f.createDimension("x", nx)
+            f.createDimension("time", num_times)
+            f.createDimension("z", nz)
+            f.createDimension("y", ny)
+            f.createDimension("x", nx)
+            
+            f.createVariable("time", "f8", ("time",))[:] = time_vals
+            f.createVariable("z", "f4", ("z",))[:] = z_vals
+            f.createVariable("y", "f4", ("y",))[:] = y_vals
+            f.createVariable("x", "f4", ("x",))[:] = x_vals
+            
+            f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
+                                zlib=True, complevel=4, chunksizes=(1, nz, ny, nx), fill_value=False)
+
+        # 2. Setup Multi-core Pool Execution Structure
+        print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
+        pool_args = [(t, input_dir, grid_distance, nz, ny, nx, z_vals, box_limits) for t in range(num_times)]
         
-        f.createVariable("time", "f8", ("time",))[:] = time_vals
-        f.createVariable("z", "f4", ("z",))[:] = z_vals
-        f.createVariable("y", "f4", ("y",))[:] = y_vals
-        f.createVariable("x", "f4", ("x",))[:] = x_vals
-        
-        f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
-                            zlib=True, complevel=4, chunksizes=(1, nz, ny, nx), fill_value=False)
+        #open_files = {fname: nc.Dataset(str(output_dir / fname), "a") for fname in export_registry}
 
-    # 2. Setup Multi-core Pool Execution Structure
-    print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-    pool_args = [(t, input_dir, grid_distance, nz, ny, nx, z_vals, box_limits) for t in range(num_times)]
-    
-    #open_files = {fname: nc.Dataset(str(output_dir / fname), "a") for fname in export_registry}
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            for t, results in pool.starmap(process_connected_ql_timestep, pool_args):
+                print(f"Timestep {t}/{num_times - 1} finished in ({results['duration']}). Committing to files...")
+                
+                # Safe Single-Threaded Write operations
+                open_files["nearest_shell_distance.nc"].variables["distance"][t, :, :, :] = results["nearest_shell_distance.nc"]
+                open_files["nearest_shell_distance_vert.nc"].variables["distance"][t, :, :, :] = results["nearest_shell_distance_vert.nc"]
+                open_files["nearest_relative_shell_altitude.nc"].variables["relative_altitude"][t, :, :, :] = results["nearest_relative_shell_altitude.nc"]
+                open_files["nearest_shell_distance_horz.nc"].variables["distance"][t, :, :, :] = results["nearest_shell_distance_horz.nc"]
+                
+                for open_file in open_files.values():
+                    open_file.sync()
+                
+                del results
+                gc.collect()
 
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        for t, results in pool.starmap(process_connected_ql_timestep, pool_args):
-            print(f"Timestep {t}/{num_times - 1} finished in ({results['duration']}). Committing to files...")
-            
-            # Safe Single-Threaded Write operations
-            open_files["nearest_shell_distance.nc"].variables["distance"][t, :, :, :] = results["nearest_shell_distance.nc"]
-            open_files["nearest_shell_distance_vert.nc"].variables["distance"][t, :, :, :] = results["nearest_shell_distance_vert.nc"]
-            open_files["nearest_relative_shell_altitude.nc"].variables["relative_altitude"][t, :, :, :] = results["nearest_relative_shell_altitude.nc"]
-            open_files["nearest_shell_distance_horz.nc"].variables["distance"][t, :, :, :] = results["nearest_shell_distance_horz.nc"]
-            
-            for open_file in open_files.values():
-                open_file.sync()
-            
-            del results
-            gc.collect()
+        # 3. Flush and close handles
+        for file_obj in open_files.values():
+            file_obj.close()
 
-    # 3. Flush and close handles
-    for file_obj in open_files.values():
-        file_obj.close()
+        print("\n✅ All computation and exporting complete (Program is safe to close)")
+    except KeyboardInterrupt:
+        print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
+    finally:
+        # This block ALWAYS runs, ensuring handles are dropped on normal exit OR scancel
+        print("Flushing and closing all NetCDF file handles...")
+        for filename, file_obj in open_files.items():
+            try:
+                file_obj.close()
+                print(f" -> Closed: {filename}")
+            except Exception as e:
+                print(f" -> Error closing {filename}: {e}")
 
-    print("\n✅ All computation and exporting complete (Program is safe to close)")
+        print("\n✅ All file streams safely disconnected.")

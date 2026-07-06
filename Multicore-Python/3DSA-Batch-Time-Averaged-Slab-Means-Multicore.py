@@ -73,17 +73,21 @@ if __name__ == '__main__':
 
     print(f"Spawning Pool with {num_cores} active workers over {len(physical_vars)} groups...")
     
-    # Run parallel workers
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        for group_name, group_data, duration in pool.imap_unordered(process_group_worker, pool_tasks):
-            print(f"Group '{group_name}' compiled in ({duration}). Committing to netCDF...")
-            
-            # Combine individual mask DataArrays into a clean group dataset
-            ds_group = xr.Dataset(group_data)
-            
-            # Append cleanly to the shared output file under its designated group name
-            ds_group.to_netcdf(output_file, mode="a", group=group_name)
-            
-            gc.collect()
+    try:
+        # Run parallel workers
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            for group_name, group_data, duration in pool.imap_unordered(process_group_worker, pool_tasks):
+                print(f"Group '{group_name}' compiled in ({duration}). Committing to netCDF...")
+                
+                # Combine individual mask DataArrays into a clean group dataset
+                ds_group = xr.Dataset(group_data)
+                
+                # Append cleanly to the shared output file under its designated group name
+                ds_group.to_netcdf(output_file, mode="a", group=group_name)
+                
+                gc.collect()
 
-    print("\n✅ All computation and exporting complete (Program is safe to close)")
+        print("\n✅ All computation and exporting complete (Program is safe to close)")
+    except KeyboardInterrupt:
+        print("\n⚠️ Job interrupted or cancelled via Slurm. Stopping worker pool safely...")
+        print("⚠️ Note: The last group being written may be incomplete or corrupt in the output file.")

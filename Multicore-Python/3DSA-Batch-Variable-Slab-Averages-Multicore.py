@@ -134,45 +134,59 @@ if __name__ == '__main__':
     if output_file.exists():
         output_file.unlink()
 
-    # --- Preallocate structured NetCDF with Groups ---
-    print("Pre-allocating Grouped NetCDF file on disk...")
-    root_nc = nc.Dataset(str(output_file), "w", format="NETCDF4")
+    root_nc = None
 
-    group_handles = {}
-    for var_key in PHYSICAL_VARS:
-        grp = root_nc.createGroup(var_key)
-        group_handles[var_key] = grp
-        
-        # Dimensions
-        grp.createDimension("time", num_times)
-        grp.createDimension("z", nz)
-        
-        # Coordinates
-        grp.createVariable("time", "f8", ("time",))[:] = time_vals
-        grp.createVariable("z", "f4", ("z",))[:] = z_vals
-        
-        # Profile Data Variables
-        for m_key in MASK_KEYS:
-            grp.createVariable(m_key, "f4", ("time", "z"), zlib=True, complevel=4)
+    try:
+        # --- Preallocate structured NetCDF with Groups ---
+        print("Pre-allocating Grouped NetCDF file on disk...")
+        root_nc = nc.Dataset(str(output_file), "w", format="NETCDF4")
 
-    # --- Start Worker Pool ---
-    worker_config = {"paths": {k: str(v) for k, v in file_registry.items()}}
-    pool_tasks = [(t, worker_config) for t in range(num_times)]
-
-    print(f"Spawning Pool with {num_cores} workers over {num_times} timesteps...")
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        for t_idx, profiles, duration in pool.imap_unordered(process_timestep_worker, pool_tasks):
-            print(f"Timestep {t_idx}/{num_times - 1} finished in ({duration}). Committing profiles...")
+        group_handles = {}
+        for var_key in PHYSICAL_VARS:
+            grp = root_nc.createGroup(var_key)
+            group_handles[var_key] = grp
             
-            # Stream the 1D profiles into their allocated netCDF slots
-            for var_key, mask_dict in profiles.items():
-                grp = group_handles[var_key]
-                for m_key, profile_array in mask_dict.items():
-                    grp.variables[m_key][t_idx, :] = profile_array
+            # Dimensions
+            grp.createDimension("time", num_times)
+            grp.createDimension("z", nz)
             
-            root_nc.sync()
-            gc.collect()
+            # Coordinates
+            grp.createVariable("time", "f8", ("time",))[:] = time_vals
+            grp.createVariable("z", "f4", ("z",))[:] = z_vals
+            
+            # Profile Data Variables
+            for m_key in MASK_KEYS:
+                grp.createVariable(m_key, "f4", ("time", "z"), zlib=True, complevel=4)
 
-    root_nc.close()
-    print("\n✅ All computation and exporting complete (Program is safe to close)")
+        # --- Start Worker Pool ---
+        worker_config = {"paths": {k: str(v) for k, v in file_registry.items()}}
+        pool_tasks = [(t, worker_config) for t in range(num_times)]
+
+        print(f"Spawning Pool with {num_cores} workers over {num_times} timesteps...")
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            for t_idx, profiles, duration in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_times - 1} finished in ({duration}). Committing profiles...")
+                
+                # Stream the 1D profiles into their allocated netCDF slots
+                for var_key, mask_dict in profiles.items():
+                    grp = group_handles[var_key]
+                    for m_key, profile_array in mask_dict.items():
+                        grp.variables[m_key][t_idx, :] = profile_array
+                
+                root_nc.sync()
+                gc.collect()
+
+        root_nc.close()
+        print("\n✅ All computation and exporting complete (Program is safe to close)")
+    except KeyboardInterrupt:
+        print("\n⚠️ Job interrupted or cancelled via Slurm. Flushing and releasing main dataset lock...")
+        
+    finally:
+        # This block ALWAYS runs, guaranteeing that the master lock drops
+        if root_nc is not None:
+            try:
+                root_nc.close()
+                print("✅ Root NetCDF dataset handle safely closed and file locks released.")
+            except Exception as e:
+                print(f"❌ Error encountered while closing root file handle: {e}")
 
