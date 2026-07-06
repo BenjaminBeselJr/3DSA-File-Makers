@@ -104,6 +104,7 @@ def process_timestep_worker(args):
             padded_dilated_seed = scipy.ndimage.grey_dilation(padded_seed, footprint=expansion)
             flooded_labels = padded_dilated_seed[1:-1, 1:-1, 1:-1]
 
+    iteration = 0
     if np.any(local_cloud_labels) and np.any(w_mask):
         print(" -> Flooding cloud labels into the w mask...")
         iteration = 0
