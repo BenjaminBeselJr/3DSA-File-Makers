@@ -25,7 +25,7 @@ def process_group_worker(args):
         for mask_type in mask_keys:
             if mask_type in ds_group:
                 # Compute time mean profile over dimension 't'
-                time_mean = ds_group[mask_type].mean(dim='t').compute()
+                time_mean = ds_group[mask_type].mean(dim='time').compute()
                 group_data[mask_type] = time_mean
 
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))

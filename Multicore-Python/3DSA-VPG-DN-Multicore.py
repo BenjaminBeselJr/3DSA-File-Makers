@@ -1,0 +1,336 @@
+import os
+import math
+import numpy as np
+import xarray as xr
+import scipy.ndimage
+from pathlib import Path
+import netCDF4 as nc
+import scipy.linalg
+import time
+import sys
+import multiprocessing
+import json
+import gc
+import metpy
+from metpy.units import units
+import metpy.calc as mpcalc
+
+# =====================================================================
+# GLOBAL CONFIGURATION & SHARED REGISTRY
+# =====================================================================
+EXPORT_REGISTRY = {
+    "pi_dn.nc": ("pi_dn", "f4"),
+    "vpg_dn.nc": ("vpg_dn", "f4"),
+}
+
+# Physical Constants
+L_v = 2.5 * (10**6)  # latent heat
+c_pd = 1004          # specific heat
+p_0 = 10**5          # reference pressure
+R_d = 287
+R_v = 461.5
+
+# --- FFT Solver ---
+def solve_generalized_poisson_3d(f, sigma, z_coords, dx, dy):
+    """
+    Solves the 3D generalized Poisson equation on a vertically stretched grid:
+        grad dot (sigma(z) * grad(m)) = f(x, y, z)
+    """
+    nz, ny, nx = f.shape
+    
+    # 1. Horizontal Fourier Transform of the RHS source term
+    f_hat = np.fft.rfft2(f, axes=(1, 2))
+    
+    # 2. Compute symmetric horizontal wavenumbers squared (kx^2 + ky^2)
+    kx = np.fft.rfftfreq(nx, d=dx) * 2 * np.pi
+    ky = np.fft.fftfreq(ny, d=dy) * 2 * np.pi
+    k_sq = ky[:, np.newaxis]**2 + kx[np.newaxis, :]**2
+    nkx = len(kx)
+    
+    # 3. Compute exact stretched grid metrics from true simulation centers
+    dz_center = np.diff(z_coords)                 # Distance between centers (nz - 1)
+    zh = 0.5 * (z_coords[:-1] + z_coords[1:])     # Reconstructed half-levels (nz - 1)
+    dz_cell = np.diff(zh)                         # Thickness of interior cells (nz - 2)
+    
+    dz_cell_bottom = z_coords[1] - z_coords[0]
+    dz_cell_top = z_coords[-1] - z_coords[-2]
+    
+    sigma_half = 0.5 * (sigma[:-1] + sigma[1:])   # Length: nz - 1
+    
+    # 4. Pre-compute the shared vertical operators (Built ONCE outside loops)
+    interior_lower = sigma_half[:-1] / (dz_cell * dz_center[:-1])
+    interior_upper = sigma_half[1:] / (dz_cell * dz_center[1:])
+    
+    # Allocate template for the base tridiagonal matrix
+    ab_base = np.zeros((3, nz), dtype=complex)
+    
+    # Fill vertical terms for interior rows
+    ab_base[2, :-2] = interior_lower               # Corrected lower diagonal shift
+    ab_base[0, 2:]  = interior_upper               # Corrected upper diagonal shift
+    ab_base[1, 1:-1] = -interior_upper - interior_lower
+    
+    # Fill vertical terms for boundary cap rows (Neumann boundary conditions)
+    ab_base[1, 0]  = -sigma_half[0] / (dz_cell_bottom * dz_center[0])
+    ab_base[0, 1]  =  sigma_half[0] / (dz_cell_bottom * dz_center[0])
+    
+    ab_base[1, -1] = -sigma_half[-1] / (dz_cell_top * dz_center[-1])
+    ab_base[2, -2] =  sigma_half[-1] / (dz_cell_top * dz_center[-1])
+    
+    # Initialize container for the Fourier-space solution
+    m_hat = np.zeros_like(f_hat, dtype=complex)
+    
+    # 5. Fast Execution Loop
+    for r in range(ny):
+        for c in range(nkx):
+            ksq_rc = k_sq[r, c]
+            
+            if r == 0 and c == 0:
+                m_hat[:, r, c] = 0.0
+                continue
+                
+            # Copy the pre-computed base vertical structure 
+            ab = ab_base.copy()
+            
+            # Layer the horizontal curvature decay on top of the main diagonal
+            ab[1, :] -= sigma * ksq_rc
+            
+            # Instantaneous 1D tridiagonal solver execution
+            m_hat[:, r, c] = scipy.linalg.solve_banded((1, 1), ab, f_hat[:, r, c])
+            
+    # 6. Transform back to real physical space
+    m = np.fft.irfft2(m_hat, s=(ny, nx), axes=(1, 2))
+    
+    return m
+
+# --- Multiprocessing Worker Function ---
+def process_timestep_worker(args):
+    """
+    Worker task running on an isolated core. Computes connected-component components 
+    and returns localized numpy matrices back to the orchestrator thread.
+    """
+    start_time = time.time()
+    t, cfg = args
+
+    paths = cfg["paths"]
+    dx, dy = cfg["dx"], cfg["dy"]
+
+    init_th_profile = cfg["init_th_profile"]
+    c_pd = cfg["c_pd"]
+    rho_profile = cfg["rho_profile"]
+    u_o = cfg["u_o"]
+    v_o = cfg["v_o"]
+
+    x_target = cfg["x_vals"]
+    y_target = cfg["y_vals"]
+
+
+    #load datasets
+    with xr.open_dataset(paths["u"], decode_times=False, engine="netcdf4") as ds_u, \
+         xr.open_dataset(paths["v"], decode_times=False, engine="netcdf4") as ds_v:
+         
+        u_slice = ds_u.u.isel(time=t)
+        v_slice = ds_v.v.isel(time=t)
+        u_slice = u_slice.rename({'xh':'x'}).interp(x=x_target)
+        v_slice = v_slice.rename({'yh':'y'}).interp(y=y_target)
+        z_coords = u_slice.z.values
+
+    rho_da = xr.DataArray(rho_profile, coords={'z': z_coords}, dims=['z'])
+
+    #--Calculate pi DN--
+    #Obtaining sigma (part of the left hand side)
+    sigma_numpy = (c_pd * init_th_profile)
+    if sigma_numpy.ndim > 1: #leakage protection
+        sigma_numpy = sigma_numpy[0]
+
+    #Big V' calc (V-Vo)
+    #where V is (u,v) and Vo is (u_o, v_o)
+    u_prime = u_slice - u_o[:, np.newaxis, np.newaxis]
+    v_prime = v_slice - v_o[:, np.newaxis, np.newaxis]
+
+    #Obtaining f' (right hand side)
+    advection_x = u_prime * u_prime.differentiate("x") + v_prime * u_prime.differentiate("y")
+    advection_y = u_prime * v_prime.differentiate("x") + v_prime * v_prime.differentiate("y")
+
+    flux_x = rho_da * advection_x
+    flux_y = rho_da * advection_y
+
+    div_x = flux_x.differentiate("x")
+    div_y = flux_y.differentiate("y")
+
+    f_DN = -(div_x + div_y)
+
+    f_DN_numpy = f_DN.compute().values
+    f_DN_numpy = np.nan_to_num(f_DN_numpy, nan=0.0) #clean f
+
+    #dx, dy, z vals
+    dx = float(x_target[1] - x_target[0])
+    dy = float(y_target[1] - y_target[0])
+    z_numpy = u_slice.z.compute().values
+
+    #Performing Fourier analysis to find pi'_b
+    pi_DN_numpy = solve_generalized_poisson_3d(
+        f=f_DN_numpy, 
+        sigma=sigma_numpy, 
+        z_coords=z_numpy, 
+        dx=dx, 
+        dy=dy
+    )
+
+    pi_DN_xr = xr.DataArray(
+        pi_DN_numpy, 
+        coords={"z": z_numpy, "y": y_target, "x": x_target}, 
+        dims=["z", "y", "x"]
+    )
+
+    #VPG DN
+    dpi_dz_numpy = pi_DN_xr.differentiate(coord="z").compute().values
+    vpg_DN_numpy = -c_pd * init_th_profile[:, np.newaxis, np.newaxis] * dpi_dz_numpy
+
+
+    # --- Exporting ---
+    elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
+    return t, {
+        "pi_dn.nc": pi_DN_numpy.astype(np.float32),
+        "vpg_dn.nc": vpg_DN_numpy.astype(np.float32),
+        "duration": elapsed_str,
+    }
+
+
+# --- Main Thread ---
+if __name__ == '__main__':
+    t_conds = 18
+
+    # --- Configurations ---
+    num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
+
+    # --- Setting up directories from config ---
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+    if not CONFIG_PATH.is_file():
+        print(f"❌ ERROR: Configuration file missing at: {CONFIG_PATH}", file=sys.stderr)
+        sys.exit(1)
+
+    # Read json config file
+    with open(CONFIG_PATH, "r") as f:
+        config_data = json.load(f)
+
+    # Extract Paths
+    source_input_dir = Path(config_data["paths"]["source_input_dir"])
+    output_dir = Path(config_data["paths"]["output_dir"])
+
+    #in case directory does not exist
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Initialization Success:")
+    print(f" -> Source Input Path: {source_input_dir}")
+    print(f" -> Output Path:       {output_dir}")
+    print(f" -> Active CPU Cores:  {num_cores}")
+    print("-" * 50)
+
+    print("Checking file dependencies...")
+    file_paths = {
+        "p": source_input_dir / "p.nc",
+        "u": source_input_dir / "u.nc",
+        "v": source_input_dir / "v.nc",
+        "initial": source_input_dir / "eurec4a.default.0000000.nc"
+    }
+    #Check that files exist
+    for name, path in file_paths.items():
+        if not path.is_file():
+            print(f"❌ ERROR: Missing target dependency: {path}", file=sys.stderr)
+            sys.exit(1)
+
+    # Global structure
+    with xr.open_dataset(file_paths["p"], decode_times=False, engine="netcdf4") as ds_meta:
+        num_times = int(ds_meta.time.size)
+        nz, ny, nx = ds_meta.p.shape[1:]
+        time_vals = ds_meta.time.values
+        z_vals = ds_meta.z.values
+        y_vals = ds_meta.y.values
+        x_vals = ds_meta.x.values
+        dx = float(ds_meta.x[1] - ds_meta.x[0])
+        dy = float(ds_meta.y[1] - ds_meta.y[0])
+
+
+    # --- Setup Reference Profile States ---
+    with xr.open_dataset(file_paths["initial"], group='thermo', decode_times=False) as ds_t, \
+         xr.open_dataset(file_paths["initial"], group='default', decode_times=False) as ds_g:
+         
+        ds_initial_thermo = ds_t.isel(time=t_conds).compute()
+        ds_initial_general = ds_g.isel(time=t_conds).compute()
+
+    rho_profile = ds_initial_thermo.rhoref.values
+    u_o = ds_initial_general.u.values
+    v_o = ds_initial_general.v.values
+
+    #-create th-
+    init_th_raw = mpcalc.potential_temperature(
+        ds_initial_general.p.values * units.pascal, 
+        ds_initial_thermo.T.values * units.kelvin
+    )
+
+    init_th_profile = np.asarray(init_th_raw.magnitude, dtype=np.float32)
+
+    # Replace any top-of-atmosphere Infs or NaNs with standard neighboring numbers
+    init_th_profile = np.nan_to_num(init_th_profile, nan=300.0, posinf=300.0, neginf=300.0)
+
+    # If the top grid point is bad, backfill it with the layer just below it
+    if not np.isfinite(init_th_profile[-1]):
+        init_th_profile[-1] = init_th_profile[-2]
+
+    # --- Preallocate NetCDF file structures ---
+    open_files = {}
+    print("Pre-allocating NetCDF file structures on disk...")
+    for filename, (var_name, data_type) in EXPORT_REGISTRY.items():
+        file_path = output_dir / filename
+        f = nc.Dataset(str(file_path), "w", format="NETCDF4")
+        open_files[filename] = f
+        f.createDimension("time", num_times)
+        f.createDimension("z", nz)
+        f.createDimension("y", ny)
+        f.createDimension("x", nx)
+        
+        f.createVariable("time", "f8", ("time",))[:] = time_vals
+        f.createVariable("z", "f4", ("z",))[:] = z_vals
+        f.createVariable("y", "f4", ("y",))[:] = y_vals
+        f.createVariable("x", "f4", ("x",))[:] = x_vals
+        
+        f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
+                            zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
+
+    # --- Start Worker Pool ---
+    # Package arguments cleanly into a metadata dictionary
+    worker_config = {
+        "paths": {k: str(v) for k, v in file_paths.items()},
+        "dx": dx,
+        "dy": dy,
+        "x_vals": x_vals,
+        "y_vals": y_vals,
+        "init_th_profile": init_th_profile,  # Raw 1D numpy array
+        "rho_profile": rho_profile,           # Raw 1D numpy array
+        "c_pd": c_pd,                          # Specific heat at constant pressure
+        "u_o": u_o,                           # Reference u velocity profile
+        "v_o": v_o                            # Reference v velocity profile
+    }
+
+    print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
+    pool_tasks = [(t, worker_config) for t in range(num_times)]
+
+    with multiprocessing.Pool(processes=num_cores) as pool:
+        for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+            print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+            
+            for filename, data_array in payload.items():
+                if filename == "duration":
+                    continue
+                var_key = EXPORT_REGISTRY[filename][0]
+                open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
+                open_files[filename].sync()
+
+            gc.collect()
+
+    for file_obj in open_files.values():
+        file_obj.close()
+
+    print("\n✅ All computation and exporting complete (Program is safe to close)")

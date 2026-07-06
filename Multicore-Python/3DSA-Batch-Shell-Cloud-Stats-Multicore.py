@@ -11,9 +11,6 @@ import sys
 import multiprocessing
 import json
 import gc
-import metpy
-from metpy.units import units
-import metpy.calc as mpcalc
 
 # =====================================================================
 # GLOBAL CONFIGURATION & SHARED REGISTRY

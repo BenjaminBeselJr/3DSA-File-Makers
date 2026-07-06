@@ -31,7 +31,7 @@ if not path_ds_w.is_file():
 #Loading datasets
 ds_ql = xr.open_dataset(path_ds_ql, decode_times=False,chunks={'time': 1})
 ds_w = xr.open_dataset(path_ds_w, decode_times=False,chunks={'time': 1})
-ds_w = ds_w.rename({'zh':'z'}).interp(z=ds_ql.z).load()
+ds_w = ds_w.rename({'zh':'z'}).interp(z=ds_ql.z)
 
 print("Dataset opening complete")
 
