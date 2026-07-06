@@ -1,6 +1,7 @@
 {
     "paths": {
-        "source_input_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area",
+        "source_input_dir": "/mnt/stor-pool-01/projects/heus/EUREC4A_Eulerian/Feb_1st_12day_cdnc70_nudge",
+        "input_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area",
         "output_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area"
     }
 }
