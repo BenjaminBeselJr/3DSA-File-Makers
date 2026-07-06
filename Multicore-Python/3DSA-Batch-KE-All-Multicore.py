@@ -43,7 +43,7 @@ def process_timestep_worker(args):
 
 
     #load datasets
-    with xr.open_dataset(paths["ql_mask"], decode_times=False, engine="netcdf4") as ds_ql_mask, \
+    with xr.open_dataset(paths["cloud_mask"], decode_times=False, engine="netcdf4") as ds_cloud_mask, \
          xr.open_dataset(paths["w"], decode_times=False, engine="netcdf4") as ds_w, \
          xr.open_dataset(paths["vpg"], decode_times=False, engine="netcdf4") as ds_vpg, \
          xr.open_dataset(paths["b"], decode_times=False, engine="netcdf4") as ds_b, \
@@ -51,9 +51,9 @@ def process_timestep_worker(args):
          xr.open_dataset(paths["vpg_dn"], decode_times=False, engine="netcdf4") as ds_vpg_dn, \
          xr.open_dataset(paths["vpg_dl"], decode_times=False, engine="netcdf4") as ds_vpg_dl:
 
-        z_coords = ds_ql_mask.z.values
+        z_coords = ds_cloud_mask.z.values
 
-        ql_mask_slice = ds_ql_mask.ql_mask.isel(time=t).compute()
+        cloud_mask_slice = ds_cloud_mask.cloud_mask.isel(time=t).compute()
         w_slice = ds_w.w.isel(time=t).rename({'zh':'z'}).interp(z=z_coords).compute()
         vpg_slice = ds_vpg.vpg.isel(time=t).compute()
         b_slice = ds_b.b.isel(time=t).compute()
@@ -62,10 +62,10 @@ def process_timestep_worker(args):
         vpg_dl_slice = ds_vpg_dl.vpg_dl.isel(time=t).compute()
         b_eff_slice = vpg_b_slice + b_slice
 
-    has_nonzero_per_layer = (ql_mask_slice > 0).any(dim=["x", "y"])
+    has_nonzero_per_layer = (cloud_mask_slice > 0).any(dim=["x", "y"])
 
     # Filter the actual Z coordinates to only keep the ones where clouds exist
-    cloud_z_coords = ql_mask_slice.z.where(has_nonzero_per_layer, drop=True)
+    cloud_z_coords = cloud_mask_slice.z.where(has_nonzero_per_layer, drop=True)
 
 
     if cloud_z_coords.size > 0:
@@ -162,7 +162,7 @@ if __name__ == '__main__':
 
     print("Checking file dependencies...")
     file_paths = {
-        "ql_mask": input_dir / "ql_mask.nc",
+        "cloud_mask": input_dir / "cloud_mask.nc",
         "w": source_input_dir / "w.nc",
         "vpg": input_dir / "vpg.nc",
         "b": input_dir / "b.nc",
@@ -177,9 +177,9 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["ql_mask"], decode_times=False, engine="netcdf4") as ds_meta:
+    with xr.open_dataset(file_paths["cloud_mask"], decode_times=False, engine="netcdf4") as ds_meta:
         num_times = int(ds_meta.time.size)
-        nz, ny, nx = ds_meta.ql_mask.shape[1:]
+        nz, ny, nx = ds_meta.cloud_mask.shape[1:]
         time_vals = ds_meta.time.values
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values

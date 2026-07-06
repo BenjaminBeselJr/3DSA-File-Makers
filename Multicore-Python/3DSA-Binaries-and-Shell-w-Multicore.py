@@ -19,6 +19,7 @@ import cc3d
 EXPORT_REGISTRY = {
     "ql_mask.nc": ("ql_mask", "u1"),
     "w_mask.nc": ("w_mask", "u1"),
+    "cloud_mask.nc": ("cloud_mask", "u1"),
     "shell_mask.nc": ("shell_mask", "u1"),
     "shell_labels.nc": ("shell_labels", "u4"),
     "cloud_labels.nc": ("cloud_labels", "u4"),
@@ -26,7 +27,8 @@ EXPORT_REGISTRY = {
 }
 
 # Physical Constants
-negative_w_threshold = -0.25
+negative_w_threshold = -0.5
+ql_threshold = 10**-5
 ql_dilation = 1
 
 
@@ -44,13 +46,14 @@ def process_timestep_worker(args):
 
     ql_dilation = cfg["ql_dilation"]
     negative_w_threshold = cfg["negative_w_threshold"]
+    ql_threshold = cfg["ql_threshold"]
     expansion = cfg["expansion"]
 
     #load datasets
     with xr.open_dataset(paths["ql"], decode_times=False, engine="netcdf4") as ds_ql, \
          xr.open_dataset(paths["w"], decode_times=False, engine="netcdf4") as ds_w:
 
-        ql_raw = (ds_ql.ql.isel(time=t).fillna(0) > 0).values.astype(bool)
+        ql_raw = (ds_ql.ql.isel(time=t).fillna(0) > ql_threshold).values.astype(bool)
         w_interpolated = ds_w.w.isel(time=t).rename({'zh': 'z'}).interp(z=ds_ql.z).fillna(0)
         w_mask = (w_interpolated < negative_w_threshold).values.astype(bool)
 
@@ -63,6 +66,33 @@ def process_timestep_worker(args):
         padded_ql_core = np.pad(ql_raw, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
         padded_ql_labels = cc3d.connected_components(padded_ql_core, connectivity=6, periodic_boundary=True)
         local_cloud_labels = padded_ql_labels[1:-1, :, :].astype(np.uint32)
+
+    #getting labels that are on all axis at least two grid units thick
+    valid_labels = []
+    if np.any(local_cloud_labels):
+        # 1. Pad for periodic boundaries on X/Y before checking neighborhoods
+        padded_labels = np.pad(local_cloud_labels, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
+        padded_labels = np.pad(padded_labels, ((0, 0), (1, 1), (1, 1)), mode='wrap')
+
+        # 2x2x2 box used to check against ql regions
+        thick_core_footprint = np.ones((2, 2, 2), dtype=bool)
+
+        # 2. Erode the mask. This obliterates all 1D lines, diagonals, and single-cell sheets
+        binary_cloud = (padded_labels > 0)
+        eroded_cloud = scipy.ndimage.binary_erosion(binary_cloud, structure=thick_core_footprint)
+        eroded_cloud_unpadded = eroded_cloud[1:-1, 1:-1, 1:-1] # Unpad back to original domain size
+
+        # 3. Find which original labels possess a surviving "thick core"
+        surviving_ids = np.unique(local_cloud_labels[eroded_cloud_unpadded])
+        valid_labels = surviving_ids[surviving_ids != 0] # Drop background
+
+    #updating to the proper mask
+    local_cloud_mask = np.isin(local_cloud_labels, valid_labels)
+
+    if np.any(local_cloud_mask):
+        padded_lcm = np.pad(local_cloud_mask, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
+        padded_lcm_labels = cc3d.connected_components(padded_lcm, connectivity=6, periodic_boundary=True)
+        local_cloud_labels = padded_lcm_labels[1:-1, :, :].astype(np.uint32)
 
     flooded_labels = local_cloud_labels.copy()
     
@@ -95,7 +125,7 @@ def process_timestep_worker(args):
             flooded_labels[grow_mask] = dilated_step[grow_mask]
             iteration += 1
     
-    shell_domain = w_mask & ~ql_raw
+    shell_domain = w_mask & ~local_cloud_mask
     local_shell_labels = np.where(shell_domain, flooded_labels, 0).astype(np.uint32)
     local_outline_mask = np.where(local_shell_labels > 0, 1, 0).astype(np.uint8)
 
@@ -109,6 +139,7 @@ def process_timestep_worker(args):
         "ql_mask.nc": ql_raw.astype(np.uint8),
         "w_mask.nc": w_mask.astype(np.uint8),
         "shell_mask.nc": local_outline_mask,
+        "cloud_mask.nc": local_cloud_mask,
         "shell_labels.nc": local_shell_labels,
         "cloud_labels.nc": local_cloud_labels,
         "shell_w.nc": local_shell_w,
@@ -201,6 +232,7 @@ if __name__ == '__main__':
         "dx": dx,
         "dy": dy,
         "ql_dilation": ql_dilation,
+        "ql_threshold": ql_threshold,
         "negative_w_threshold": negative_w_threshold,
         "expansion": expansion
     }

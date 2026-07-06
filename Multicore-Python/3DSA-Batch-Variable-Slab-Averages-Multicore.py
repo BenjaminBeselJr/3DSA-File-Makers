@@ -43,13 +43,13 @@ def process_timestep_worker(args):
          xr.open_dataset(paths["shallow_mask"], decode_times=False) as ds_shm, \
          xr.open_dataset(paths["congestus_mask"], decode_times=False) as ds_cm, \
          xr.open_dataset(paths["deep_mask"], decode_times=False) as ds_dm, \
-         xr.open_dataset(paths["ql_mask"], decode_times=False) as ds_qm:
+         xr.open_dataset(paths["cloud_mask"], decode_times=False) as ds_qm:
          
         m_shell = ds_sm.shell_mask.isel(time=t).values.astype(bool)
         m_shallow = ds_shm.shallow_mask.isel(time=t).values.astype(bool)
         m_congestus = ds_cm.congestus_mask.isel(time=t).values.astype(bool)
         m_deep = ds_dm.deep_mask.isel(time=t).values.astype(bool)
-        m_cloud = ds_qm.ql_mask.isel(time=t).values.astype(bool)
+        m_cloud = ds_qm.cloud_mask.isel(time=t).values.astype(bool)
 
     masks = {
         "domain": None,
@@ -115,7 +115,7 @@ if __name__ == '__main__':
     file_registry["shallow_mask"] = output_dir / "shallow_mask.nc"
     file_registry["congestus_mask"] = output_dir / "congestus_mask.nc"
     file_registry["deep_mask"] = output_dir / "deep_mask.nc"
-    file_registry["ql_mask"] = output_dir / "ql_mask.nc"
+    file_registry["cloud_mask"] = output_dir / "cloud_mask.nc"
 
     # Verify everything exists
     for name, path in file_registry.items():
