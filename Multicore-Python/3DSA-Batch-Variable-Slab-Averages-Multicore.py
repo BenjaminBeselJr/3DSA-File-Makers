@@ -8,6 +8,7 @@ import numpy as np
 import xarray as xr
 import netCDF4 as nc
 import multiprocessing
+import argparse
 
 # =====================================================================
 # GLOBAL REGISTRIES
@@ -93,6 +94,15 @@ def process_timestep_worker(args):
 if __name__ == '__main__':
     num_cores = int(os.environ.get("CORE_COUNT", 1))
 
+    parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
+    parser.add_index = parser.add_argument(
+        "--data_source", 
+        type=str, 
+        required=True, 
+        help="Key matching the data source configuration block in config.json"
+    )
+    args = parser.parse_args()
+
     # --- Setting up directories ---
     SCRIPT_DIR = Path(__file__).resolve().parent
     CONFIG_PATH = SCRIPT_DIR / "config.json"
@@ -104,6 +114,13 @@ if __name__ == '__main__':
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
 
+    #load config preset based on 
+    source_key = args.data_source
+    if source_key not in config_data["paths"]:
+        print(f"❌ ERROR: Data source '{source_key}' not found in config.json", file=sys.stderr)
+        sys.exit(1)
+
+    source_input_dir = Path(config_data["paths"][source_key]["source_input_dir"])
     output_dir = Path(config_data["paths"]["output_dir"])
 
     #in case directory does not exist
@@ -116,7 +133,6 @@ if __name__ == '__main__':
     os.environ["TMPDIR"] = str(custom_tmp_dir)
     # ──────────────────────────────────────────────────────────────────────
 
-    source_input_dir = Path("/mnt/stor-pool-01/projects/heus/EUREC4A_Eulerian/Feb_1st_12day_cdnc70_nudge/")
     output_file = output_dir / "slab_averages_grouped.nc"
 
     # Define exact paths for files needed by workers

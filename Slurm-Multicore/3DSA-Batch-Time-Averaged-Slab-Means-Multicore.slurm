@@ -16,10 +16,13 @@ module list
 # Dynamically export whatever core count Slurm physically allocated for this task
 export CORE_COUNT=$SLURM_CPUS_PER_TASK
 
+DATA_SRC=${data_source:-Feb_cdnc70}
+echo "Starting job execution for source: $DATA_SRC"
+
 echo "---> Slurm allocated ${SLURM_CPUS_PER_TASK} cores. Forwarding CORE_COUNT=${CORE_COUNT} to Python."
 
 # Force /usr/bin/python3 to check your personal pip installs first
 export PYTHONPATH=$HOME/.local/lib/python3.9/site-packages:$PYTHONPATH
 
-/usr/bin/time /usr/bin/python3 /mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Multicore-Python/3DSA-Batch-Time-Averaged-Slab-Means-Multicore.py
+/usr/bin/time /usr/bin/python3 /mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Multicore-Python/3DSA-Batch-Time-Averaged-Slab-Means-Multicore.py --data_source "$DATA_SRC"
 

@@ -11,6 +11,7 @@ import sys
 import multiprocessing
 import json
 import gc
+import argparse
 
 # =====================================================================
 # GLOBAL CONFIGURATION & SHARED REGISTRY
@@ -141,6 +142,15 @@ if __name__ == '__main__':
     # --- Configurations ---
     num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
 
+    parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
+    parser.add_index = parser.add_argument(
+        "--data_source", 
+        type=str, 
+        required=True, 
+        help="Key matching the data source configuration block in config.json"
+    )
+    args = parser.parse_args()
+
     # --- Setting up directories from config ---
     SCRIPT_DIR = Path(__file__).resolve().parent
     CONFIG_PATH = SCRIPT_DIR / "config.json"
@@ -153,8 +163,14 @@ if __name__ == '__main__':
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
 
+    #load config preset based on 
+    source_key = args.data_source
+    if source_key not in config_data["paths"]:
+        print(f"❌ ERROR: Data source '{source_key}' not found in config.json", file=sys.stderr)
+        sys.exit(1)
+
     # Extract Paths
-    output_dir = Path(config_data["paths"]["output_dir"])
+    output_dir = Path(config_data["paths"][source_key]["output_dir"])
     input_dir = output_dir
 
     #in case directory does not exist

@@ -14,6 +14,7 @@ import gc
 import metpy
 from metpy.units import units
 import metpy.calc as mpcalc
+import argparse
 
 # =====================================================================
 # GLOBAL CONFIGURATION & SHARED REGISTRY
@@ -203,6 +204,15 @@ if __name__ == '__main__':
     # --- Configurations ---
     num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
 
+    parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
+    parser.add_index = parser.add_argument(
+        "--data_source", 
+        type=str, 
+        required=True, 
+        help="Key matching the data source configuration block in config.json"
+    )
+    args = parser.parse_args()
+
     # --- Setting up directories from config ---
     SCRIPT_DIR = Path(__file__).resolve().parent
     CONFIG_PATH = SCRIPT_DIR / "config.json"
@@ -215,9 +225,16 @@ if __name__ == '__main__':
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
 
+    #load config preset based on 
+    source_key = args.data_source
+    if source_key not in config_data["paths"]:
+        print(f"❌ ERROR: Data source '{source_key}' not found in config.json", file=sys.stderr)
+        sys.exit(1)
+
     # Extract Paths
-    source_input_dir = Path(config_data["paths"]["source_input_dir"])
-    output_dir = Path(config_data["paths"]["output_dir"])
+    source_input_dir = Path(config_data["paths"][source_key]["source_input_dir"])
+    output_dir = Path(config_data["paths"][source_key]["output_dir"])
+    default_fname = Path(config_data["paths"][source_key]["default_file_name"])
 
     #in case directory does not exist
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +257,7 @@ if __name__ == '__main__':
         "p": source_input_dir / "p.nc",
         "u": source_input_dir / "u.nc",
         "v": source_input_dir / "v.nc",
-        "initial": source_input_dir / "eurec4a.default.0000000.nc"
+        "initial": source_input_dir / default_fname
     }
     #Check that files exist
     for name, path in file_paths.items():

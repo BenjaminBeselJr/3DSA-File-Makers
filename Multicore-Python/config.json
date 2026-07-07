@@ -1,7 +1,21 @@
 {
     "paths": {
-        "source_input_dir": "/mnt/stor-pool-01/projects/heus/EUREC4A_Eulerian/Feb_1st_12day_cdnc70_nudge",
-        "input_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area",
-        "output_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area"
+        "default": {
+            "source_input_dir": "/mnt/stor-pool-01/projects/heus/EUREC4A_Eulerian/Feb_1st_12day_cdnc70_nudge",
+            "output_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/full-area",
+            "default_file_name" : "eurec4a.default.0000000.nc"
+        },
+
+        "SEUS": {
+            "source_input_dir": "/mnt/stor-pool-01/projects/heus/BNF/Ensemble_Tests/512_512_50m_12km_chbuff/2025-07-01_normal_shell/thijs",
+            "output_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/SEUS",
+            "default_file_name" : "SEUS.default.0000000.nc"
+        },
+
+        "RICO": {
+            "source_input_dir": "/mnt/stor-pool-01/projects/heus/rico/doubledump",
+            "output_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/RICO",
+            "default_file_name" : "rico.default.0000000.nc"
+        }
     }
 }

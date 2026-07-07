@@ -12,9 +12,19 @@ import time
 import sys
 import multiprocessing
 import json
+import argparse
 
 # --- Configurations ---
 num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
+
+parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
+parser.add_index = parser.add_argument(
+    "--data_source", 
+    type=str, 
+    required=True, 
+    help="Key matching the data source configuration block in config.json"
+)
+args = parser.parse_args()
 
 # --- Setting up directories from config ---
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -28,9 +38,14 @@ if not CONFIG_PATH.is_file():
 with open(CONFIG_PATH, "r") as f:
     config_data = json.load(f)
 
+#load config preset based on 
+source_key = args.data_source
+if source_key not in config_data["paths"]:
+    print(f"❌ ERROR: Data source '{source_key}' not found in config.json", file=sys.stderr)
+    sys.exit(1)
+
 # Extract Paths
-source_input_dir = Path(config_data["paths"]["source_input_dir"])
-output_dir = Path(config_data["paths"]["output_dir"])
+output_dir = Path(config_data["paths"][source_key]["output_dir"])
 input_dir = output_dir  # Input directory matches output directory for script chain dependencies
 
 # In case directory does not exist
@@ -44,9 +59,8 @@ os.environ["TMPDIR"] = str(custom_tmp_dir)
 # ──────────────────────────────────────────────────────────────────────
 
 print(f"Initialization Success:")
-print(f" -> Source Input Path: {source_input_dir}")
-print(f" -> Output Path:       {output_dir}")
-print(f" -> Active CPU Cores:  {num_cores}")
+print(f" -> Input & Output Path:   {output_dir}")
+print(f" -> Active CPU Cores:      {num_cores}")
 print("-" * 50)
 
 export_registry = {
