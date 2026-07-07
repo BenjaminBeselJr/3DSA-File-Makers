@@ -226,8 +226,6 @@ if __name__ == '__main__':
     print("Checking file dependencies...")
     file_paths = {
         "p": source_input_dir / "p.nc",
-        "u": source_input_dir / "u.nc",
-        "v": source_input_dir / "v.nc",
         "w": source_input_dir / "w.nc",
         "initial": source_input_dir / "eurec4a.default.0000000.nc"
     }
