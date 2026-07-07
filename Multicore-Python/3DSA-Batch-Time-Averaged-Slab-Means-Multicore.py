@@ -51,6 +51,13 @@ if __name__ == '__main__':
     input_file = output_dir / "slab_averages_grouped.nc"
     output_file = output_dir / "time_averaged_slab_averages_grouped.nc"
 
+    # ─── OVERRIDE SYSTEM TMPDIR WITH CONFIG PATH ──────────────────────────
+    custom_tmp_dir = output_dir / "tmp"
+    custom_tmp_dir.mkdir(parents=True, exist_ok=True)
+    
+    os.environ["TMPDIR"] = str(custom_tmp_dir)
+    # ──────────────────────────────────────────────────────────────────────
+
     if not input_file.is_file():
         print(f"❌ ERROR: Source file missing at: {input_file}", file=sys.stderr)
         sys.exit(1)
@@ -87,7 +94,16 @@ if __name__ == '__main__':
                 
                 gc.collect()
 
-        print("\n✅ All computation and exporting complete (Program is safe to close)")
+        print("\n✅ All computation and exporting complete")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Stopping worker pool safely...")
         print("⚠️ Note: The last group being written may be incomplete or corrupt in the output file.")
+    finally:
+        try:
+            import shutil
+            if custom_tmp_dir.exists():
+                shutil.rmtree(custom_tmp_dir)
+                print("🧹 Cleaned up temporary buffer directory.")
+        except Exception as e:
+            print(f"⚠️ Could not automatically clean up tmp folder: {e}")
+        print("[Program is safe to close]")

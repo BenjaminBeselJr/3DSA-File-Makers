@@ -160,6 +160,13 @@ if __name__ == '__main__':
     #in case directory does not exist
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ─── OVERRIDE SYSTEM TMPDIR WITH CONFIG PATH ──────────────────────────
+    custom_tmp_dir = output_dir / "tmp"
+    custom_tmp_dir.mkdir(parents=True, exist_ok=True)
+    
+    os.environ["TMPDIR"] = str(custom_tmp_dir)
+    # ──────────────────────────────────────────────────────────────────────
+
     print(f"Initialization Success:")
     print(f" -> Input Path: {input_dir}")
     print(f" -> Output Path:       {output_dir}")
@@ -251,10 +258,7 @@ if __name__ == '__main__':
         else:
             print("\n⚠️ No object tracking statistics were collected across the simulation.")
 
-        for file_obj in open_files.values():
-            file_obj.close()
-
-        print("\n✅ All computation and exporting complete (Program is safe to close)")
+        print("\n✅ All computation and exporting complete")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
     finally:
@@ -267,4 +271,12 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f" -> Error closing {filename}: {e}")
 
-        print("\n✅ All file streams safely disconnected.")
+        try:
+            import shutil
+            if custom_tmp_dir.exists():
+                shutil.rmtree(custom_tmp_dir)
+                print("🧹 Cleaned up temporary buffer directory.")
+        except Exception as e:
+            print(f"⚠️ Could not automatically clean up tmp folder: {e}")
+
+        print("\n✅ All file streams safely disconnected (Program is safe to close).")

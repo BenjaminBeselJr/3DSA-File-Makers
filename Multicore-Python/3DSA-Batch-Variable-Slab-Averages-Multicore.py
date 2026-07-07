@@ -105,6 +105,17 @@ if __name__ == '__main__':
         config_data = json.load(f)
 
     output_dir = Path(config_data["paths"]["output_dir"])
+
+    #in case directory does not exist
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ─── OVERRIDE SYSTEM TMPDIR WITH CONFIG PATH ──────────────────────────
+    custom_tmp_dir = output_dir / "tmp"
+    custom_tmp_dir.mkdir(parents=True, exist_ok=True)
+    
+    os.environ["TMPDIR"] = str(custom_tmp_dir)
+    # ──────────────────────────────────────────────────────────────────────
+
     source_input_dir = Path("/mnt/stor-pool-01/projects/heus/EUREC4A_Eulerian/Feb_1st_12day_cdnc70_nudge/")
     output_file = output_dir / "slab_averages_grouped.nc"
 
@@ -177,7 +188,7 @@ if __name__ == '__main__':
                 gc.collect()
 
         root_nc.close()
-        print("\n✅ All computation and exporting complete (Program is safe to close)")
+        print("\n✅ All computation and exporting complete")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Flushing and releasing main dataset lock...")
         
@@ -189,4 +200,13 @@ if __name__ == '__main__':
                 print("✅ Root NetCDF dataset handle safely closed and file locks released.")
             except Exception as e:
                 print(f"❌ Error encountered while closing root file handle: {e}")
+        try:
+            import shutil
+            if custom_tmp_dir.exists():
+                shutil.rmtree(custom_tmp_dir)
+                print("🧹 Cleaned up temporary buffer directory.")
+        except Exception as e:
+            print(f"⚠️ Could not automatically clean up tmp folder: {e}")
+
+        print("[Program is safe to close]")
 
