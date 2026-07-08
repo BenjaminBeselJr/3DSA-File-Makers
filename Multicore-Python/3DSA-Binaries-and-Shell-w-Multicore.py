@@ -21,8 +21,10 @@ EXPORT_REGISTRY = {
     "ql_mask.nc": ("ql_mask", "u1"),
     "w_mask.nc": ("w_mask", "u1"),
     "cloud_mask.nc": ("cloud_mask", "u1"),
+    "gap_mask.nc": ("gap_mask", "u1"),
     "shell_mask.nc": ("shell_mask", "u1"),
     "shell_labels.nc": ("shell_labels", "u4"),
+    "gap_labels.nc": ("gap_labels", "u4"),
     "cloud_labels.nc": ("cloud_labels", "u4"),
     "shell_w.nc": ("w", "f4"),
 }
@@ -105,6 +107,8 @@ def process_timestep_worker(args):
             padded_dilated_seed = scipy.ndimage.grey_dilation(padded_seed, footprint=expansion)
             flooded_labels = padded_dilated_seed[1:-1, 1:-1, 1:-1]
 
+    dilated_cloud_labels = flooded_labels.copy()
+
     iteration = 0
     if np.any(local_cloud_labels) and np.any(w_mask):
         print(" -> Flooding cloud labels into the w mask...")
@@ -131,6 +135,12 @@ def process_timestep_worker(args):
     local_shell_labels = np.where(shell_domain, flooded_labels, 0).astype(np.uint32)
     local_outline_mask = np.where(local_shell_labels > 0, 1, 0).astype(np.uint8)
 
+    #obtain gap between shell and cloud
+    dilated_cloud_mask = np.where(dilated_cloud_labels > 0, True, False)
+    gap_domain = dilated_cloud_mask & ~(shell_domain | local_cloud_mask)
+    local_gap_labels = np.where(gap_domain, dilated_cloud_labels, 0)
+    local_gap_mask = np.where(gap_domain, 1, 0).astype(np.uint8)
+
     #obtain shell w
     w_slice_physical = w_interpolated.values
     local_shell_w = np.where(local_outline_mask > 0, w_slice_physical, np.nan)
@@ -141,8 +151,10 @@ def process_timestep_worker(args):
         "ql_mask.nc": ql_raw.astype(np.uint8),
         "w_mask.nc": w_mask.astype(np.uint8),
         "shell_mask.nc": local_outline_mask,
+        "gap_mask.nc": local_gap_mask,
         "cloud_mask.nc": local_cloud_mask,
         "shell_labels.nc": local_shell_labels,
+        "gap_labels.nc": local_gap_labels,
         "cloud_labels.nc": local_cloud_labels,
         "shell_w.nc": local_shell_w,
         "duration": elapsed_str,
