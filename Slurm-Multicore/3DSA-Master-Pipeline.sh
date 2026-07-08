@@ -22,6 +22,9 @@ VPG_BB_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3
 VPG_DN_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-VPG-DN-Multicore.slurm"
 VPG_DL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-VPG-DL-Multicore.slurm"
 
+NEAREST_QL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Nearest-Cloud-Shell-Distance-Multicore.slurm"
+CONNECTED_QL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Connected-Shell-Distance-Multicore.slurm"
+
 # ---------------------------------------------------------------------
 # STAGE 1: Root Tasks (No Dependencies)
 # ---------------------------------------------------------------------
@@ -47,9 +50,11 @@ echo "✅ Stage 2A Queued: Cloud Stats (Job ID: $JOB_STATS, waits for $JOB_SHELL
 JOB_KE=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL:$JOB_VPG_BB:$JOB_VPG_DN:$JOB_VPG_DL --export=ALL,data_source="$DATA_SRC" "$KE_SLURM")
 echo "✅ Stage 2B Queued: Kinetic Energy calculation (Job ID: $JOB_KE)"
 
-# Optional future tracks (Commented Out)
-# JOB_NEAR_QL=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL "$NEAREST_QL_SLURM")
-# JOB_CONN_QL=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL "$CONNECTED_QL_SLURM")
+JOB_NEAR_QL=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL --export=ALL,data_source="$DATA_SRC" "$NEAREST_QL_SLURM")
+echo "✅ Stage 2C Queued: Nearest ql shell distance calculation (Job ID: $JOB_NEAR_QL)"
+
+JOB_CONN_QL=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL --export=ALL,data_source="$DATA_SRC" "$CONNECTED_QL_SLURM")
+echo "✅ Stage 2D Queued: Connected ql shell distance (Job ID: $JOB_CONN_QL)"
 
 # ---------------------------------------------------------------------
 # STAGE 3: Slab averages
