@@ -14,54 +14,6 @@ import multiprocessing
 import json
 import argparse
 
-# --- Configurations ---
-num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
-
-parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
-parser.add_index = parser.add_argument(
-    "--data_source", 
-    type=str, 
-    required=True, 
-    help="Key matching the data source configuration block in config.json"
-)
-args = parser.parse_args()
-
-# --- Setting up directories from config ---
-SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "config.json"
-
-if not CONFIG_PATH.is_file():
-    print(f"❌ ERROR: Configuration file missing at: {CONFIG_PATH}", file=sys.stderr)
-    sys.exit(1)
-
-# Read json config file
-with open(CONFIG_PATH, "r") as f:
-    config_data = json.load(f)
-
-#load config preset based on 
-source_key = args.data_source
-if source_key not in config_data["paths"]:
-    print(f"❌ ERROR: Data source '{source_key}' not found in config.json", file=sys.stderr)
-    sys.exit(1)
-
-# Extract Paths
-output_dir = Path(config_data["paths"][source_key]["output_dir"])
-input_dir = output_dir  # Input directory matches output directory for script chain dependencies
-
-# In case directory does not exist
-output_dir.mkdir(parents=True, exist_ok=True)
-
-# ─── OVERRIDE SYSTEM TMPDIR WITH CONFIG PATH ──────────────────────────
-custom_tmp_dir = output_dir / "tmp"
-custom_tmp_dir.mkdir(parents=True, exist_ok=True)
-
-os.environ["TMPDIR"] = str(custom_tmp_dir)
-# ──────────────────────────────────────────────────────────────────────
-
-print(f"Initialization Success:")
-print(f" -> Input & Output Path:   {output_dir}")
-print(f" -> Active CPU Cores:      {num_cores}")
-print("-" * 50)
 
 export_registry = {
     "nearest_shell_distance.nc": ("distance", "f4"),
@@ -71,12 +23,19 @@ export_registry = {
 }
 
 # --- Multiprocessing Worker Function ---
-def process_connected_ql_timestep(t, input_dir, grid_distance, nz, ny, nx, z_real, box_limits):
+def process_worker(args):
     """
     Worker task running on an isolated core. Computes connected-component components 
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
+
+    t, cfg = args
+    nz, ny, nx = cfg["nz"], cfg["ny"], cfg["nx"]
+    input_dir = cfg["input_dir"]
+    grid_distance = cfg["grid_distance"]
+    z_real = cfg["z_real"]
+    box_limits = cfg["box_limits"]
     
     # 1. Read single timestep locally
     with xr.open_dataset(input_dir / "shell_mask.nc", decode_times=False) as ds_shell_mask:
@@ -159,12 +118,61 @@ def process_connected_ql_timestep(t, input_dir, grid_distance, nz, ny, nx, z_rea
 
 # --- Execution Controller Guard ---
 if __name__ == '__main__':
+    # --- Configurations ---
+    num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
+
+    parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
+    parser.add_argument(
+        "--data_source", 
+        type=str, 
+        required=True, 
+        help="Key matching the data source configuration block in config.json"
+    )
+    args = parser.parse_args()
+
+    # --- Setting up directories from config ---
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+    if not CONFIG_PATH.is_file():
+        print(f"❌ ERROR: Configuration file missing at: {CONFIG_PATH}", file=sys.stderr)
+        sys.exit(1)
+
+    # Read json config file
+    with open(CONFIG_PATH, "r") as f:
+        config_data = json.load(f)
+
+    #load config preset based on 
+    source_key = args.data_source
+    if source_key not in config_data["paths"]:
+        print(f"❌ ERROR: Data source '{source_key}' not found in config.json", file=sys.stderr)
+        sys.exit(1)
+
+    # Extract Paths
+    output_dir = Path(config_data["paths"][source_key]["output_dir"])
+    input_dir = output_dir  # Input directory matches output directory for script chain dependencies
+
+    # In case directory does not exist
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ─── OVERRIDE SYSTEM TMPDIR WITH CONFIG PATH ──────────────────────────
+    custom_tmp_dir = output_dir / "tmp"
+    custom_tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    os.environ["TMPDIR"] = str(custom_tmp_dir)
+    # ──────────────────────────────────────────────────────────────────────
+
+    print(f"Initialization Success:")
+    print(f" -> Input & Output Path:   {output_dir}")
+    print(f" -> Active CPU Cores:      {num_cores}")
+    print("-" * 50)
+    main_start_time = time.time()
     print("Verifying target datasets...")
-    path_ds_shell_labels = input_dir / "shell_labels.nc"
+    path_ds_shell_mask = input_dir / "shell_mask.nc"
     path_ds_cloud_mask = input_dir / "cloud_mask.nc"
     
-    if not path_ds_shell_labels.is_file():
-        print(f"❌ ERROR: Missing required file: {path_ds_shell_labels}", file=sys.stderr)
+    if not path_ds_shell_mask.is_file():
+        print(f"❌ ERROR: Missing required file: {path_ds_shell_mask}", file=sys.stderr)
         sys.exit(1)
     if not path_ds_cloud_mask.is_file():
         print(f"❌ ERROR: Missing required file: {path_ds_cloud_mask}", file=sys.stderr)
@@ -205,13 +213,25 @@ if __name__ == '__main__':
                                 zlib=True, complevel=4, chunksizes=(1, nz, ny, nx), fill_value=False)
 
         # 2. Setup Multi-core Pool Execution Structure
+
+        
+        worker_config = {
+            "input_dir" : input_dir,
+            "grid_distance" : grid_distance,
+            "nz" : nz,
+            "ny" : ny,
+            "nx" : nx, 
+            "z_real" : z_vals, 
+            "box_limits" : box_limits
+        }
+
         print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-        pool_args = [(t, input_dir, grid_distance, nz, ny, nx, z_vals, box_limits) for t in range(num_times)]
+        pool_tasks = [(t, worker_config) for t in range(num_times)]
         
         #open_files = {fname: nc.Dataset(str(output_dir / fname), "a") for fname in export_registry}
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t, results in pool.starmap(process_connected_ql_timestep, pool_args):
+            for t, results in pool.imap_unordered(process_worker, pool_tasks):
                 print(f"Timestep {t}/{num_times - 1} finished in ({results['duration']}). Committing to files...")
                 
                 # Safe Single-Threaded Write operations
@@ -226,7 +246,8 @@ if __name__ == '__main__':
                 del results
                 gc.collect()
 
-        print("\n✅ All computation and exporting complete")
+        main_elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - main_start_time))
+        print(f"\n✅ All computation and exporting complete in ({main_elapsed_str})")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
     finally:

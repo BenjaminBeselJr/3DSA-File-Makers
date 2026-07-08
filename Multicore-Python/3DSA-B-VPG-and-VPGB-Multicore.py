@@ -113,7 +113,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t, cfg = args
+    t_new, t, cfg = args
 
     paths = cfg["paths"]
     dx, dy = cfg["dx"], cfg["dy"]
@@ -178,7 +178,7 @@ def process_timestep_worker(args):
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t, {
+    return t_new, t, {
         "b.nc": b_slice.values,
         "vpg.nc": vpg_slice.values,
         "pi_b.nc": pi_b_numpy,
@@ -189,13 +189,14 @@ def process_timestep_worker(args):
 
 # --- Main Thread ---
 if __name__ == '__main__':
-    t_conds = 18
+    t_conds = 19
+    main_start_time = time.time()
 
     # --- Configurations ---
     num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
 
     parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
-    parser.add_index = parser.add_argument(
+    parser.add_argument(
         "--data_source", 
         type=str, 
         required=True, 
@@ -260,7 +261,17 @@ if __name__ == '__main__':
     with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta:
         num_times = int(ds_meta.time.size)
         nz, ny, nx = ds_meta.ql.shape[1:]
-        time_vals = ds_meta.time.values
+
+        #Switch slicing depending on source of data
+        if source_key in ["SEUS", "RICO"]:
+            active_timesteps = [t for t in range(3, num_times, 2)] #all odds except index 1
+            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
+        else:
+            active_timesteps = list(range(num_times))
+
+        time_vals = ds_meta.time.values[active_timesteps]
+        num_output_times = len(active_timesteps)
+
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
         x_vals = ds_meta.x.values
@@ -300,7 +311,7 @@ if __name__ == '__main__':
             file_path = output_dir / filename
             f = nc.Dataset(str(file_path), "w", format="NETCDF4")
             open_files[filename] = f
-            f.createDimension("time", num_times)
+            f.createDimension("time", num_output_times)
             f.createDimension("z", nz)
             f.createDimension("y", ny)
             f.createDimension("x", nx)
@@ -323,12 +334,15 @@ if __name__ == '__main__':
             "rho_profile": rho_profile           # Raw 1D numpy array
         }
 
-        print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-        pool_tasks = [(t, worker_config) for t in range(num_times)]
+        print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
+        pool_tasks = [
+            (new_idx, t_original, worker_config) 
+            for new_idx, t_original in enumerate(active_timesteps)
+        ]
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
                 
                 for filename, data_array in payload.items():
                     if filename == "duration":
@@ -339,7 +353,8 @@ if __name__ == '__main__':
 
                 gc.collect()
 
-        print("\n✅ All computation and exporting complete")
+        main_elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - main_start_time))
+        print(f"\n✅ All computation and exporting complete in ({main_elapsed_str})")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
     finally:

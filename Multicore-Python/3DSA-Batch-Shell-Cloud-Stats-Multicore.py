@@ -143,7 +143,7 @@ if __name__ == '__main__':
     num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
 
     parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
-    parser.add_index = parser.add_argument(
+    parser.add_argument(
         "--data_source", 
         type=str, 
         required=True, 

@@ -33,7 +33,7 @@ def process_timestep_worker(args):
     """
 
     start_time = time.time()
-    t, cfg = args
+    t_new, t, cfg = args
     paths = cfg["paths"]
 
     # Initialize a clean dictionary container for this timestep's profiles
@@ -69,13 +69,13 @@ def process_timestep_worker(args):
         if var_key == "b_eff":
             with xr.open_dataset(paths["b"], decode_times=False) as ds_b, \
                  xr.open_dataset(paths["vpg_b"], decode_times=False) as ds_vb:
-                raw_volume = ds_b["b"].isel(time=t).values + ds_vb["vpg_b"].isel(time=t).values
+                raw_volume = ds_b["b"].isel(time=t_new).values + ds_vb["vpg_b"].isel(time=t_new).values
         elif var_key == "w":
             with xr.open_dataset(paths["w"], decode_times=False) as ds_w:
                 raw_volume = ds_w["w"].isel(time=t).values
         else:
             with xr.open_dataset(paths[var_key], decode_times=False) as ds_var:
-                raw_volume = ds_var[var_key].isel(time=t).values
+                raw_volume = ds_var[var_key].isel(time=t_new).values
 
         # Compute averages for each mask
         for m_key, mask_matrix in masks.items():
@@ -88,14 +88,17 @@ def process_timestep_worker(args):
             timestep_profiles[var_key][m_key] = np.nanmean(masked_volume, axis=(1, 2)).astype(np.float32)
 
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t, timestep_profiles, elapsed_str
+    return t_new, t, timestep_profiles, elapsed_str
 
 # --- Main Thread ---
 if __name__ == '__main__':
+    main_start_time = time.time()
+
+    # --- Configurations ---
     num_cores = int(os.environ.get("CORE_COUNT", 1))
 
     parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
-    parser.add_index = parser.add_argument(
+    parser.add_argument(
         "--data_source", 
         type=str, 
         required=True, 
@@ -121,7 +124,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
     source_input_dir = Path(config_data["paths"][source_key]["source_input_dir"])
-    output_dir = Path(config_data["paths"]["output_dir"])
+    output_dir = Path(config_data["paths"][source_key]["output_dir"])
 
     #in case directory does not exist
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -154,7 +157,17 @@ if __name__ == '__main__':
     with xr.open_dataset(file_registry["shell_mask"], decode_times=False) as ds_meta:
         num_times = int(ds_meta.time.size)
         nz = ds_meta.shell_mask.shape[1]
-        time_vals = ds_meta.time.values
+        
+        #Switch slicing depending on source of data
+        if source_key in ["SEUS", "RICO"]:
+            active_timesteps = [t for t in range(3, num_times, 2)] #all odds except index 1
+            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
+        else:
+            active_timesteps = list(range(num_times))
+
+        time_vals = ds_meta.time.values[active_timesteps]
+        num_output_times = len(active_timesteps)
+
         z_vals = ds_meta.z.values
 
     # Reset output file to prevent mixing data with old runs
@@ -174,7 +187,7 @@ if __name__ == '__main__':
             group_handles[var_key] = grp
             
             # Dimensions
-            grp.createDimension("time", num_times)
+            grp.createDimension("time", num_output_times)
             grp.createDimension("z", nz)
             
             # Coordinates
@@ -187,12 +200,15 @@ if __name__ == '__main__':
 
         # --- Start Worker Pool ---
         worker_config = {"paths": {k: str(v) for k, v in file_registry.items()}}
-        pool_tasks = [(t, worker_config) for t in range(num_times)]
+        print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
+        pool_tasks = [
+            (new_idx, t_original, worker_config) 
+            for new_idx, t_original in enumerate(active_timesteps)
+        ]
 
-        print(f"Spawning Pool with {num_cores} workers over {num_times} timesteps...")
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, profiles, duration in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_times - 1} finished in ({duration}). Committing profiles...")
+            for t_idx, t_original, profiles, duration in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({duration}). Committing to files...")
                 
                 # Stream the 1D profiles into their allocated netCDF slots
                 for var_key, mask_dict in profiles.items():
@@ -204,7 +220,8 @@ if __name__ == '__main__':
                 gc.collect()
 
         root_nc.close()
-        print("\n✅ All computation and exporting complete")
+        main_elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - main_start_time))
+        print(f"\n✅ All computation and exporting complete in ({main_elapsed_str})")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Flushing and releasing main dataset lock...")
         

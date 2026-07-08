@@ -36,7 +36,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t, cfg = args
+    t_new, t, cfg = args
 
     paths = cfg["paths"]
     dx, dy = cfg["dx"], cfg["dy"]
@@ -54,13 +54,13 @@ def process_timestep_worker(args):
 
         z_coords = ds_cloud_mask.z.values
 
-        cloud_mask_slice = ds_cloud_mask.cloud_mask.isel(time=t).compute()
+        cloud_mask_slice = ds_cloud_mask.cloud_mask.isel(time=t_new).compute()
         w_slice = ds_w.w.isel(time=t).rename({'zh':'z'}).interp(z=z_coords).compute()
-        vpg_slice = ds_vpg.vpg.isel(time=t).compute()
-        b_slice = ds_b.b.isel(time=t).compute()
-        vpg_b_slice = ds_vpg_b.vpg_b.isel(time=t).compute()
-        vpg_dn_slice = ds_vpg_dn.vpg_dn.isel(time=t).compute()
-        vpg_dl_slice = ds_vpg_dl.vpg_dl.isel(time=t).compute()
+        vpg_slice = ds_vpg.vpg.isel(time=t_new).compute()
+        b_slice = ds_b.b.isel(time=t_new).compute()
+        vpg_b_slice = ds_vpg_b.vpg_b.isel(time=t_new).compute()
+        vpg_dn_slice = ds_vpg_dn.vpg_dn.isel(time=t_new).compute()
+        vpg_dl_slice = ds_vpg_dl.vpg_dl.isel(time=t_new).compute()
         b_eff_slice = vpg_b_slice + b_slice
 
     has_nonzero_per_layer = (cloud_mask_slice > 0).any(dim=["x", "y"])
@@ -90,7 +90,7 @@ def process_timestep_worker(args):
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t, {
+    return t_new, t, {
         "duration": elapsed_str,
         "zi_msg": zi_msg,
         "ke_w.nc": ke_w.values,
@@ -131,11 +131,13 @@ def compute_bounded_kinetic_energy(da, z_base, template_ds):
 
 # --- Main Thread ---
 if __name__ == '__main__':
+    main_start_time = time.time()
+
     # --- Configurations ---
     num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified
 
     parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
-    parser.add_index = parser.add_argument(
+    parser.add_argument(
         "--data_source", 
         type=str, 
         required=True, 
@@ -203,7 +205,17 @@ if __name__ == '__main__':
     with xr.open_dataset(file_paths["cloud_mask"], decode_times=False, engine="netcdf4") as ds_meta:
         num_times = int(ds_meta.time.size)
         nz, ny, nx = ds_meta.cloud_mask.shape[1:]
-        time_vals = ds_meta.time.values
+        
+        #Switch slicing depending on source of data
+        if source_key in ["SEUS", "RICO"]:
+            active_timesteps = [t for t in range(3, num_times, 2)] #all odds except index 1
+            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
+        else:
+            active_timesteps = list(range(num_times))
+
+        time_vals = ds_meta.time.values[active_timesteps]
+        num_output_times = len(active_timesteps)
+
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
         x_vals = ds_meta.x.values
@@ -218,7 +230,7 @@ if __name__ == '__main__':
             file_path = output_dir / filename
             f = nc.Dataset(str(file_path), "w", format="NETCDF4")
             open_files[filename] = f
-            f.createDimension("time", num_times)
+            f.createDimension("time", num_output_times)
             f.createDimension("z", nz)
             f.createDimension("y", ny)
             f.createDimension("x", nx)
@@ -239,12 +251,15 @@ if __name__ == '__main__':
             "dy": dy,
         }
 
-        print(f"Spawning Pool with {num_cores} active workers over {num_times} timesteps...")
-        pool_tasks = [(t, worker_config) for t in range(num_times)]
+        print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
+        pool_tasks = [
+            (new_idx, t_original, worker_config) 
+            for new_idx, t_original in enumerate(active_timesteps)
+        ]
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_times - 1} finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
                 print(f" -> {payload['zi_msg']}")
                 
                 for filename, data_array in payload.items():
@@ -256,7 +271,8 @@ if __name__ == '__main__':
 
                 gc.collect()
 
-        print("\n✅ All computation and exporting complete")
+        main_elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - main_start_time))
+        print(f"\n✅ All computation and exporting complete in ({main_elapsed_str})")
     except KeyboardInterrupt:
         print("\n⚠️ Job interrupted or cancelled via Slurm. Closing files safely...")
     finally:
