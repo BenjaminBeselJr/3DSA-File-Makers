@@ -23,7 +23,7 @@ export CORE_COUNT=$SLURM_CPUS_PER_TASK
 export PYTHONPATH=$HOME/.local/lib/python3.9/site-packages:$PYTHONPATH
 
 # Create log directory
-LOG_DIR="./-log-${DATA_SRC}"
+LOG_DIR="$PWD/-log-${DATA_SRC}"
 mkdir -p "$LOG_DIR"
 
 # Redirect to log folder
