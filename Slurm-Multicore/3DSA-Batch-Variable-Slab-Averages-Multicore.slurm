@@ -7,9 +7,7 @@
 #SBATCH --partition=long
 #SBATCH --mem=0
 
-# Fallback path for logs
-#SBATCH --output=slab-avgs-job-%j.out
-#SBATCH --error=slab-avgs-job-%j.err
+#SBATCH --job-name=slab-avgs
 
 module list
 
@@ -26,11 +24,10 @@ export PYTHONPATH=$HOME/.local/lib/python3.9/site-packages:$PYTHONPATH
 LOG_DIR="$PWD/log-${DATA_SRC}"
 mkdir -p "$LOG_DIR"
 
-# Redirect to log folder
-scontrol update JobId=$SLURM_JOB_ID StandardOut="$LOG_DIR/slab-avgs-job_%j.out" StandardError="$LOG_DIR/slab-avgs-job_%j.err"
-
 echo "Starting job execution for source: $DATA_SRC"
 echo "---> Slurm allocated ${SLURM_CPUS_PER_TASK} cores. Forwarding CORE_COUNT=${CORE_COUNT} to Python."
 echo "---> Runtime text tracking directed to: $LOG_DIR"
 
-/usr/bin/time /usr/bin/python3 /mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Multicore-Python/3DSA-Batch-Variable-Slab-Averages-Multicore.py --data_source "$DATA_SRC"
+/usr/bin/time /usr/bin/python3 /mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Multicore-Python/3DSA-Batch-Variable-Slab-Averages-Multicore.py --data_source "$DATA_SRC"\
+  > "${LOG_DIR}/vpg-dl-job_${SLURM_JOB_ID}.out" \
+  2> "${LOG_DIR}/vpg-dl-job_${SLURM_JOB_ID}.err"
