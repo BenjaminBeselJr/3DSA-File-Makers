@@ -25,6 +25,8 @@ VPG_DL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3
 NEAREST_QL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Nearest-Cloud-Shell-Distance-Multicore.slurm"
 CONNECTED_QL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Connected-Shell-Distance-Multicore.slurm"
 
+NEIGHBORS_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Neighbors-Multicore.slurm"
+
 # ---------------------------------------------------------------------
 # STAGE 1: Root Tasks (No Dependencies)
 # ---------------------------------------------------------------------
@@ -57,10 +59,13 @@ JOB_CONN_QL=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB
 echo "✅ Stage 2D Queued: Connected ql shell distance (Job ID: $JOB_CONN_QL)"
 
 # ---------------------------------------------------------------------
-# STAGE 3: Slab averages
+# STAGE 3: Slab averages and Neighbors
 # ---------------------------------------------------------------------
 JOB_SLAB=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_STATS:$JOB_KE --export=ALL,data_source="$DATA_SRC" "$SLAB_SLURM")
-echo "✅ Stage 3 Queued: Slab Averages (Job ID: $JOB_SLAB)"
+echo "✅ Stage 3A Queued: Slab Averages (Job ID: $JOB_SLAB)"
+
+JOB_NEIGHBORS=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_STATS --export=ALL,data_source="$DATA_SRC" "$NEIGHBORS_SLURM")
+echo "✅ Stage 3B Queued: Neighbor Finding (Job ID: $JOB_NEIGHBORS)"
 
 # ---------------------------------------------------------------------
 # STAGE 4: Time Averaged Slab Means
