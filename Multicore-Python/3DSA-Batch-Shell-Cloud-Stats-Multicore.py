@@ -25,9 +25,32 @@ EXPORT_REGISTRY = {
     "cloud_depth.nc": ("cloud_depth", "f4"),
     "shallow_mask.nc": ("shallow_mask", "u1"),
     "congestus_mask.nc": ("congestus_mask", "u1"),
-    "deep_mask.nc": ("deep_mask", "u1")
+    "deep_mask.nc": ("deep_mask", "u1"),
+    "distance_from_shell_termination.nc": ("distance", "f4"),
+    "distance_from_cloud_top.nc": ("distance", "f4"),
+    "normalized_distance_from_cloud_base.nc": ("normalized_distance", "f4"),
+    "normalized_distance_from_shell_origin.nc": ("normalized_distance", "f4")
 }
 
+def get_valid_min(numpy_arr, mask):
+    masked_numpy = numpy_arr[mask]
+    valid_mask = ~np.isnan(masked_numpy)
+
+    if np.any(valid_mask):
+        filtered_numpy = masked_numpy[valid_mask]
+        return filtered_numpy.min()
+    else:
+        return np.nan
+    
+def get_valid_max(numpy_arr, mask):
+    masked_numpy = numpy_arr[mask]
+    valid_mask = ~np.isnan(masked_numpy)
+
+    if np.any(valid_mask):
+        filtered_numpy = masked_numpy[valid_mask]
+        return filtered_numpy.max()
+    else:
+        return np.nan
 
 # --- Multiprocessing Worker Function ---
 def process_timestep_worker(args):
@@ -42,44 +65,87 @@ def process_timestep_worker(args):
     z_coordinates = cfg["z_coordinates"]
 
     #load datasets
-    with xr.open_dataset(paths["cloud_labels"], decode_times=False, engine="netcdf4") as ds_cloud_labels, \
+    with  xr.open_dataset(paths["cloud_mask"], decode_times=False, engine="netcdf4") as ds_cloud_mask, \
+         xr.open_dataset(paths["combined_labels"], decode_times=False, engine="netcdf4") as ds_combined_labels, \
+         xr.open_dataset(paths["cloud_labels"], decode_times=False, engine="netcdf4") as ds_cloud_labels, \
          xr.open_dataset(paths["shell_labels"], decode_times=False, engine="netcdf4") as ds_shell_labels:
 
+        combined_labels_slice = ds_combined_labels.labels.isel(time=t).compute().values
         cloud_labels_slice = ds_cloud_labels.cloud_labels.isel(time=t).compute().values
         shell_labels_slice = ds_shell_labels.shell_labels.isel(time=t).compute().values
 
+        cloud_mask_slice = ds_cloud_mask.cloud_mask.isel(time=t).compute().values
+
+
     #initialize local arrays for this timestep
-    local_shell_origin = np.zeros_like(shell_labels_slice, dtype=np.float32)
-    local_shell_termination = np.zeros_like(shell_labels_slice, dtype=np.float32)
-    local_shell_depth = np.zeros_like(shell_labels_slice, dtype=np.float32)
-    local_cloud_bottom = np.zeros_like(shell_labels_slice, dtype=np.float32)
-    local_cloud_top = np.zeros_like(shell_labels_slice, dtype=np.float32)
-    local_cloud_depth = np.zeros_like(shell_labels_slice, dtype=np.float32)
-    local_congestus_mask = np.zeros_like(shell_labels_slice, dtype=bool)
-    local_deep_mask = np.zeros_like(shell_labels_slice, dtype=bool)
-    local_shallow_mask = np.zeros_like(shell_labels_slice, dtype=bool)
+    local_shell_origin = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_shell_termination = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_shell_depth = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_cloud_bottom = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_cloud_top = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_cloud_depth = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    
+    local_dfst = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_dfct = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_ndfcb = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_ndfso = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+
+    local_congestus_mask = np.zeros(shell_labels_slice.shape, dtype=np.uint8)
+    local_deep_mask = np.zeros(shell_labels_slice.shape, dtype=np.uint8)
+    local_shallow_mask = np.zeros(shell_labels_slice.shape, dtype=np.uint8)
 
     matching_labels = set(np.unique(cloud_labels_slice))
     matching_labels.discard(0)
-    timestep_data = {}
+    timestep_cloud_data = {}
+    timestep_shell_data = {}
     if matching_labels:
         #Stats calc
         for obj_id in matching_labels:
             cloud_mask = (cloud_labels_slice == obj_id)
-            shell_mask = (shell_labels_slice == obj_id)
-            combined_obj_mask = cloud_mask | shell_mask
 
-            cloud_z_indices = np.where(cloud_mask)[0]
-            shell_z_indices = np.where(shell_mask)[0]
+            cloud_z_indices, _, _ = np.where(cloud_mask)
 
-            # Initialize default values for this object
-            min_z_shell = np.nan
-            max_z_shell = np.nan
-            shell_depth = np.nan
-            min_z_cloud = np.nan
-            max_z_cloud = np.nan
-            cloud_depth = np.nan
-            classification = "shallow"
+            if cloud_z_indices.size > 0:
+                min_z_cloud = z_coordinates[cloud_z_indices.min()]
+                max_z_cloud = z_coordinates[cloud_z_indices.max()]
+                cloud_depth = max_z_cloud - min_z_cloud
+
+                local_cloud_bottom[cloud_mask] = min_z_cloud
+                local_cloud_top[cloud_mask] = max_z_cloud
+                local_cloud_depth[cloud_mask] = cloud_depth
+
+                voxel_zs = z_coordinates[cloud_z_indices]
+                local_dfct[cloud_mask] = max_z_cloud - voxel_zs
+                if cloud_depth > 0:
+                    local_ndfcb[cloud_mask] = (voxel_zs - min_z_cloud) / cloud_depth
+                else:
+                    local_ndfcb[cloud_mask] = 0.0
+                
+                if max_z_cloud > 5000: #cloud is deep
+                    classification = "deep"
+                    local_deep_mask[cloud_mask] = 1
+                elif max_z_cloud > 2000: #cloud is congestus
+                    classification = "congestus"
+                    local_congestus_mask[cloud_mask] = 1
+                else: #cloud is shallow
+                    classification = "shallow"
+                    local_shallow_mask[cloud_mask] = 1
+
+                timestep_cloud_data[int(obj_id)] = {
+                    "cloud_base": float(min_z_cloud) if not np.isnan(min_z_cloud) else None,
+                    "cloud_top": float(max_z_cloud) if not np.isnan(max_z_cloud) else None,
+                    "cloud_depth": float(cloud_depth) if not np.isnan(cloud_depth) else None,
+                    "class": classification
+                }
+        
+    matching_labels_shell = set(np.unique(shell_labels_slice))
+    matching_labels_shell.discard(0)
+    if matching_labels_shell:
+        for shell_id in matching_labels_shell:
+            combined_obj_mask = (combined_labels_slice == shell_id)
+            shell_obj_mask = (shell_labels_slice == shell_id)
+            shell_z_indices, _, _ = np.where(shell_obj_mask)
+            combined_z_indicies, _, _ = np.where(combined_obj_mask)
 
             if shell_z_indices.size > 0:
                 min_z_shell = z_coordinates[shell_z_indices.min()]
@@ -90,35 +156,61 @@ def process_timestep_worker(args):
                 local_shell_termination[combined_obj_mask] = max_z_shell
                 local_shell_depth[combined_obj_mask] = shell_depth
 
-            if cloud_z_indices.size > 0:
-                min_z_cloud = z_coordinates[cloud_z_indices.min()]
-                max_z_cloud = z_coordinates[cloud_z_indices.max()]
-                cloud_depth = max_z_cloud - min_z_cloud
-
-                local_cloud_bottom[combined_obj_mask] = min_z_cloud
-                local_cloud_top[combined_obj_mask] = max_z_cloud
-                local_cloud_depth[combined_obj_mask] = cloud_depth  
+                #Shell Distances
+                shell_voxel_zs = z_coordinates[shell_z_indices]
+                combined_voxel_zs = z_coordinates[combined_z_indicies]
+                local_dfst[combined_obj_mask] = max_z_shell - combined_voxel_zs
                 
-                if max_z_cloud > 5000: #cloud is deep
-                    classification = "deep"
-                    local_deep_mask[combined_obj_mask] = True
-                elif max_z_cloud > 2000: #cloud is congestus
-                    classification = "congestus"
-                    local_congestus_mask[combined_obj_mask] = True
-                else: #cloud is shallow
-                    classification = "shallow"
-                    local_shallow_mask[combined_obj_mask] = True
+                if shell_depth > 0: # only include depth > 0
+                    local_ndfso[combined_obj_mask] = (combined_voxel_zs - min_z_shell) / shell_depth
 
-            timestep_data[int(obj_id)] = {
-                "cloud_base": float(min_z_cloud) if not np.isnan(min_z_cloud) else None,
-                "cloud_top": float(max_z_cloud) if not np.isnan(max_z_cloud) else None,
-                "cloud_depth": float(cloud_depth) if not np.isnan(cloud_depth) else None,
-                "shell_origin": float(min_z_shell) if not np.isnan(min_z_shell) else None,
-                "shell_termination": float(max_z_shell) if not np.isnan(max_z_shell) else None,
-                "shell_depth": float(shell_depth) if not np.isnan(shell_depth) else None,
-                "class": classification
-            }
-        
+                cloud_obj_mask = combined_obj_mask & (cloud_mask_slice.astype(bool))
+                contained_classification = "free"
+
+                #Apply nans if there is no cloud
+                contained_cloud_depth = np.nan
+                contained_max_z_cloud = np.nan
+                contained_min_z_cloud = np.nan
+
+                #get properties from contained clouds
+                if(np.any(cloud_obj_mask)):
+                    contained_min_z_cloud = get_valid_min(local_cloud_bottom, cloud_obj_mask)
+                    contained_max_z_cloud = get_valid_max(local_cloud_top, cloud_obj_mask)
+
+                    if not np.isnan(contained_max_z_cloud) and not np.isnan(contained_min_z_cloud):
+                        contained_cloud_depth = contained_max_z_cloud - contained_min_z_cloud
+
+                        if contained_max_z_cloud > 5000:
+                            contained_classification = "deep"
+                            local_deep_mask[shell_obj_mask] = 1
+                        elif contained_max_z_cloud > 2000:
+                            contained_classification = "congestus"
+                            local_congestus_mask[shell_obj_mask] = 1
+                        else:
+                            contained_classification = "shallow"
+                            local_shallow_mask[shell_obj_mask] = 1
+
+                        #Cloud Distances
+                        local_dfct[shell_obj_mask] = contained_max_z_cloud - shell_voxel_zs
+                        if contained_cloud_depth > 0: #only include depth > 0
+                            local_ndfcb[shell_obj_mask] = (shell_voxel_zs - contained_min_z_cloud) / contained_cloud_depth
+
+                local_cloud_bottom[shell_obj_mask] = contained_min_z_cloud
+                local_cloud_top[shell_obj_mask] = contained_max_z_cloud
+                local_cloud_depth[shell_obj_mask] = contained_cloud_depth
+
+                timestep_shell_data[int(shell_id)] = {
+                    "lowest_cloud_base": float(contained_min_z_cloud) if not np.isnan(contained_min_z_cloud) else None,
+                    "highest_cloud_top": float(contained_max_z_cloud) if not np.isnan(contained_max_z_cloud) else None,
+                    "combined_cloud_depth": float(contained_cloud_depth) if not np.isnan(contained_cloud_depth) else None,
+                    "shell_origin": float(min_z_shell) if not np.isnan(min_z_shell) else None,
+                    "shell_termination": float(max_z_shell) if not np.isnan(max_z_shell) else None,
+                    "shell_depth": float(shell_depth) if not np.isnan(shell_depth) else None,
+                    "class": contained_classification
+                }
+
+
+
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
@@ -129,10 +221,15 @@ def process_timestep_worker(args):
         "cloud_base.nc": local_cloud_bottom,
         "cloud_top.nc": local_cloud_top,
         "cloud_depth.nc": local_cloud_depth,
-        "shallow_mask.nc": local_shallow_mask.astype(np.uint8),
-        "congestus_mask.nc": local_congestus_mask.astype(np.uint8),
-        "deep_mask.nc": local_deep_mask.astype(np.uint8),
-        "timestep_data": timestep_data,
+        "distance_from_shell_termination.nc": local_dfst,
+        "distance_from_cloud_top.nc": local_dfct,
+        "normalized_distance_from_cloud_base.nc": local_ndfcb,
+        "normalized_distance_from_shell_origin.nc": local_ndfso,
+        "shallow_mask.nc": local_shallow_mask,
+        "congestus_mask.nc": local_congestus_mask,
+        "deep_mask.nc": local_deep_mask,
+        "timestep_cloud_data": timestep_cloud_data,
+        "timestep_shell_data": timestep_shell_data,
         "duration": elapsed_str,
     }
 
@@ -191,8 +288,10 @@ if __name__ == '__main__':
 
     print("Checking file dependencies...")
     file_paths = {
-        "shell_labels": input_dir / "shell_labels.nc",
+        "cloud_mask": input_dir / "cloud_mask.nc",
+        "combined_labels": input_dir / "combined_labels.nc",
         "cloud_labels": input_dir / "cloud_labels.nc",
+        "shell_labels": input_dir / "shell_labels.nc",
     }
     #Check that files exist
     for name, path in file_paths.items():
@@ -236,7 +335,8 @@ if __name__ == '__main__':
             if data_type == "u1":
                 var.setncattr("_Unsigned", "true")
 
-        all_timesteps_data = {}
+        all_timesteps_shell_data = {}
+        all_timesteps_cloud_data = {}
         # --- Start Worker Pool ---
         # Package arguments cleanly into a metadata dictionary
         worker_config = {
@@ -256,8 +356,11 @@ if __name__ == '__main__':
                 for filename, data_array in payload.items():
                     if filename == "duration":
                         continue
-                    if filename == "timestep_data":
-                        all_timesteps_data[t_idx] = data_array
+                    if filename == "timestep_cloud_data":
+                        all_timesteps_cloud_data[t_idx] = data_array
+                        continue
+                    if filename == "timestep_shell_data":
+                        all_timesteps_shell_data[t_idx] = data_array
                         continue
                     var_key = EXPORT_REGISTRY[filename][0]
                     open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
@@ -266,13 +369,21 @@ if __name__ == '__main__':
                 gc.collect()
 
         # Save nested structured metadata dictionary as a JSON file
-        if all_timesteps_data:
-            json_path = output_dir / "shell_cloud_height_stats.json"
+        if all_timesteps_cloud_data:
+            json_path = output_dir / "cloud_height_stats.json"
             with open(json_path, "w") as jf:
-                json.dump(all_timesteps_data, jf, indent=4)
-            print(f"✅ Successfully saved nested object tracking metadata to:\n   {json_path}")
+                json.dump(all_timesteps_cloud_data, jf, indent=4)
+            print(f"✅ Successfully saved cloud object tracking metadata to:\n   {json_path}")
         else:
-            print("\n⚠️ No object tracking statistics were collected across the simulation.")
+            print("\n⚠️ No cloud object tracking statistics were collected across the simulation.")
+
+        if all_timesteps_shell_data:
+            json_path = output_dir / "shell_height_stats.json"
+            with open(json_path, "w") as jf:
+                json.dump(all_timesteps_shell_data, jf, indent=4)
+            print(f"✅ Successfully saved shell object tracking metadata to:\n   {json_path}")
+        else:
+            print("\n⚠️ No shell object tracking statistics were collected across the simulation.")
 
         print("\n✅ All computation and exporting complete")
     except KeyboardInterrupt:

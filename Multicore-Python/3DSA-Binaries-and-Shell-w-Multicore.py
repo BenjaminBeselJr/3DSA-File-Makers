@@ -19,48 +19,64 @@ import argparse
 # =====================================================================
 EXPORT_REGISTRY = {
     "ql_mask.nc": ("ql_mask", "u1"),
-    "w_mask.nc": ("w_mask", "u1"),
-    "generated_cloud_mask.nc": ("cloud_mask", "u1"),
     "cloud_mask.nc": ("cloud_mask", "u1"),
-    "gap_mask.nc": ("gap_mask", "u1"),
-    "generated_shell_mask.nc": ("shell_mask", "u1"),
     "shell_mask.nc": ("shell_mask", "u1"),
-    "shell_labels.nc": ("shell_labels", "u4"),
-    "gap_labels.nc": ("gap_labels", "u4"),
-    "generated_cloud_labels.nc": ("cloud_labels", "u4"),
+    "combined_mask.nc": ("mask", "u1"),
+    "free_shell_mask.nc": ("shell_mask", "u1"),
     "cloud_labels.nc": ("cloud_labels", "u4"),
+    "shell_labels.nc": ("shell_labels", "u4"),
+    "combined_labels.nc": ("labels", "u4")
+    
 }
 
 # Physical Constants
-negative_w_threshold = -1
 ql_threshold = 10**-5
-ql_dilation = 1
 shell_prop_lower_threshold = 0.2
 
-def bleed_labels(original_labels, bleed_mask, expansion):
-    iteration = 0
-    label_workspace = original_labels.copy()
-    if np.any(label_workspace) and np.any(bleed_mask):
-        iteration = 0
-        while True:
-            # Pad for periodic boundaries on X/Y, constant on Z before dilating
-            padded_flood = np.pad(label_workspace, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-            padded_flood = np.pad(padded_flood, ((0, 0), (1, 1), (1, 1)), mode='wrap')
+def label(source):
+    #source must be (z,y,x)
+    #returns a labeled version wrapping across x,y
 
-            padded_dilated = scipy.ndimage.grey_dilation(padded_flood, footprint=expansion)
-            dilated_step = padded_dilated[1:-1, 1:-1, 1:-1]
+    padded_source = np.pad(source, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
+    padded_labeled_source = cc3d.connected_components(padded_source, connectivity=6, periodic_boundary=True)
+    return padded_labeled_source[1:-1, :, :]
 
-            # Masking condition
-            grow_mask = bleed_mask & (label_workspace == 0) & (dilated_step > 0)
-            
-            if not np.any(grow_mask):
-                break
-                
-            label_workspace[grow_mask] = dilated_step[grow_mask]
-            iteration += 1
+def strip_small_components(original):
+    # ----- Input -----
+    # original : numpy to be stripped of small components (must be z,y,x)
+    # ----- Output -----
+    # stripped_labels
+    # stripped_mask
 
-    return iteration, label_workspace
+    if np.any(original):
+        padded_pre_init_label = np.pad(original, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
+        padded_init_labels = cc3d.connected_components(padded_pre_init_label, connectivity=6, periodic_boundary=True)
+        padded_init_labels = np.pad(padded_init_labels, ((0, 0), (1, 1), (1, 1)), mode='wrap')
 
+        #getting ql labels that are on all axis at least two grid units thick
+        valid_labels = []
+        if np.any(padded_init_labels):
+            # 2x2x2 box used to check against ql regions
+            thick_core_footprint = np.ones((2, 2, 2), dtype=bool)
+
+            # 2. Erode the mask. This obliterates all 1D lines, diagonals, and single-cell sheets
+            binary_init_labels = (padded_init_labels > 0)
+            eroded = scipy.ndimage.binary_erosion(binary_init_labels, structure=thick_core_footprint)
+
+            # 3. Find which original labels possess a surviving "thick core"
+            surviving_ids = np.unique(padded_init_labels[eroded])
+            valid_labels = surviving_ids[surviving_ids != 0] # Drop background
+
+            #Unpack and updating to the proper mask
+            init_labels = padded_init_labels[1:-1, 1:-1, 1:-1]
+            stripped_mask = np.isin(init_labels, valid_labels)
+            stripped_labels = label(stripped_mask)
+
+            return stripped_labels, stripped_mask
+        else:
+            return np.zeros_like(original), np.zeros_like(original)
+    else:
+        return np.zeros_like(original), np.zeros_like(original)
 
 # --- Multiprocessing Worker Function ---
 def process_timestep_worker(args):
@@ -72,158 +88,63 @@ def process_timestep_worker(args):
     t_new, t, cfg = args
 
     paths = cfg["paths"]
-    dx, dy = cfg["dx"], cfg["dy"]
 
-    ql_dilation = cfg["ql_dilation"]
-    negative_w_threshold = cfg["negative_w_threshold"]
-    ql_threshold = cfg["ql_threshold"]
-    expansion = cfg["expansion"]
-    has_shell_prop = cfg["has_shell_prop"]
     shell_prop_lower_threshold = cfg["shell_prop_lower_threshold"]
+    ql_threshold = cfg["ql_threshold"]
 
     #load datasets
     with xr.open_dataset(paths["ql"], decode_times=False, engine="netcdf4") as ds_ql, \
-         xr.open_dataset(paths["w"], decode_times=False, engine="netcdf4") as ds_w:
+        xr.open_dataset(paths["shell"], decode_times=False, engine="netcdf4") as ds_shell_prop:
 
         ql_raw = (ds_ql.ql.isel(time=t).fillna(0) > ql_threshold).compute().values.astype(bool)
-        w_interpolated = ds_w.w.isel(time=t).rename({'zh': 'z'}).interp(z=ds_ql.z).fillna(0)
-        w_mask = (w_interpolated < negative_w_threshold).compute().values.astype(bool)
+        shell_prop_raw = ds_shell_prop.isel(time=t)
+        shell_prop_mask = ((shell_prop_raw.shell >= shell_prop_lower_threshold) & (shell_prop_raw.shell < 1)).compute().values.astype(bool)
+        cloud_prop_mask = (shell_prop_raw.shell == 1).compute().values.astype(bool)
+        local_combined_mask = shell_prop_mask | cloud_prop_mask
+            
+    #--- Step 1 : Obtain Filtered Cloud Mask ---
+    #strip small parts of ql
+    ql_labels, ql_mask = strip_small_components(ql_raw)
 
-    if has_shell_prop:
-        with xr.open_dataset(paths["shell"], decode_times=False, engine="netcdf4") as ds_shell_prop:
-            shell_prop_raw = ds_shell_prop.isel(time=t)
-            shell_prop_mask = ((shell_prop_raw.shell >= shell_prop_lower_threshold) & (shell_prop_raw.shell < 1)).compute().values.astype(bool)
-            cloud_prop_mask = (shell_prop_raw.shell == 1).compute().values.astype(bool)
+    #apply to cloud mask
+    restricted_cloud_mask = np.where(ql_mask, cloud_prop_mask, False)
 
+    #strip small parts again (just in case)
+    local_cloud_labels, local_cloud_mask = strip_small_components(restricted_cloud_mask)
 
-    local_shell_mask = np.zeros_like(ql_raw, dtype=np.uint8)
-    local_shell_labels = np.zeros_like(ql_raw, dtype=np.uint32)
-    local_generated_shell_labels = np.zeros_like(ql_raw, dtype=np.uint32)
-    local_generated_cloud_labels = np.zeros_like(ql_raw, dtype=np.uint32)
+    #--- Step 2: Obtain Shell Labels ---
+    #make labels for combined object
+    local_combined_labels = label(local_combined_mask)
 
-    if np.any(ql_raw):
-        padded_ql_core = np.pad(ql_raw, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-        padded_ql_labels = cc3d.connected_components(padded_ql_core, connectivity=6, periodic_boundary=True)
-        local_generated_cloud_labels = padded_ql_labels[1:-1, :, :].astype(np.uint32)
-
-    #getting labels that are on all axis at least two grid units thick
-    valid_labels = []
-    if np.any(local_generated_cloud_labels):
-        # 1. Pad for periodic boundaries on X/Y before checking neighborhoods
-        padded_labels = np.pad(local_generated_cloud_labels, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-        padded_labels = np.pad(padded_labels, ((0, 0), (1, 1), (1, 1)), mode='wrap')
-
-        # 2x2x2 box used to check against ql regions
-        thick_core_footprint = np.ones((2, 2, 2), dtype=bool)
-
-        # 2. Erode the mask. This obliterates all 1D lines, diagonals, and single-cell sheets
-        binary_cloud = (padded_labels > 0)
-        eroded_cloud = scipy.ndimage.binary_erosion(binary_cloud, structure=thick_core_footprint)
-        eroded_cloud_unpadded = eroded_cloud[1:-1, 1:-1, 1:-1] # Unpad back to original domain size
-
-        # 3. Find which original labels possess a surviving "thick core"
-        surviving_ids = np.unique(local_generated_cloud_labels[eroded_cloud_unpadded])
-        valid_labels = surviving_ids[surviving_ids != 0] # Drop background
-
-    #updating to the proper mask
-    local_generated_cloud_mask = np.isin(local_generated_cloud_labels, valid_labels)
-
-    #update labels
-    if np.any(local_generated_cloud_mask):
-        padded_lcm = np.pad(local_generated_cloud_mask, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-        padded_lcm_labels = cc3d.connected_components(padded_lcm, connectivity=6, periodic_boundary=True)
-        local_generated_cloud_labels = padded_lcm_labels[1:-1, :, :].astype(np.uint32)
-
-    flooded_labels = local_generated_cloud_labels.copy()
+    #strip to just the shell
+    local_shell_labels = np.where(shell_prop_mask, local_combined_labels, 0)
     
-    if np.any(flooded_labels) and ql_dilation > 0:
-        print(f" -> Pre-dilating clouds by {ql_dilation} step(s) to bridge gaps...")
-        for _ in range(ql_dilation):
-            padded_seed = np.pad(flooded_labels, ((1, 1), (0, 0), (0, 0)), mode='constant', constant_values=0)
-            padded_seed = np.pad(padded_seed, ((0, 0), (1, 1), (1, 1)), mode='wrap')
-            padded_dilated_seed = scipy.ndimage.grey_dilation(padded_seed, footprint=expansion)
-            flooded_labels = padded_dilated_seed[1:-1, 1:-1, 1:-1]
+    #--- Step 3: Find Free Standing Shells ---
+    #get cloud labels for combined objects
+    connected_labels = np.where(local_cloud_mask, local_combined_labels, 0)
 
-    dilated_cloud_labels = flooded_labels.copy()
-    print(" -> Flooding cloud labels into the w mask...")
-    iteration = 0
-    iteration, flooded_labels = bleed_labels(flooded_labels, w_mask, expansion)
-    
-    #Making my shell
-    shell_domain = w_mask & ~local_generated_cloud_mask
-    local_generated_shell_labels = np.where(shell_domain, flooded_labels, 0).astype(np.uint32)
-    local_generated_shell_mask = np.where(local_generated_shell_labels > 0, 1, 0).astype(np.uint8)
+    #turn the labels into a list
+    connected_ids = np.unique(connected_labels) #Don't drop background because we are negating this next
 
-    #obtain gap between my shell and my cloud
-    dilated_cloud_mask = np.where(dilated_cloud_labels > 0, True, False)
-    gap_domain = dilated_cloud_mask & ~(shell_domain | local_generated_cloud_mask)
-    local_gap_labels = np.where(gap_domain, dilated_cloud_labels, 0).astype(np.uint32)
-    local_gap_mask = np.where(gap_domain, 1, 0).astype(np.uint8)
+    #obtain free shell mask
+    local_free_shell_mask = ~np.isin(local_shell_labels, connected_ids)
 
-    #If it has the shell property, use it instead for the final masks and labels
-    if has_shell_prop:
+    #mask the labels
+    local_free_shell_labels = np.where(local_free_shell_mask, local_shell_labels, 0)
 
-        merged_cloud_domain = local_generated_cloud_mask | cloud_prop_mask
-        merged_shell_domain = shell_domain | shell_prop_mask
-
-        #bleed labels
-        cloud_bleed_i, bled_cloud_labels = bleed_labels(local_generated_cloud_labels, merged_cloud_domain, expansion)
-        shell_bleed_i, bled_shell_labels = bleed_labels(local_generated_shell_labels, merged_shell_domain, expansion)
-
-        #obtain new labels
-        local_cloud_labels = np.where(cloud_prop_mask, bled_cloud_labels, 0).astype(np.uint32)
-        local_shell_labels = np.where(shell_prop_mask, bled_shell_labels, 0).astype(np.uint32)
-
-        local_cloud_mask = np.where(local_cloud_labels > 0, 1, 0).astype(np.uint8)    
-        local_shell_mask = np.where(local_shell_labels > 0, 1, 0).astype(np.uint8)
-
-        # --- Exporting ---
-        elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-        return t_new, t, {
-            "ql_mask.nc": ql_raw.astype(np.uint8),
-            "w_mask.nc": w_mask.astype(np.uint8),
-            "original_shell_mask.nc": shell_prop_mask.astype(np.uint8),
-            "generated_shell_mask.nc": local_generated_shell_mask,
-            "shell_mask.nc": local_shell_mask,
-            "gap_mask.nc": local_gap_mask,
-            "original_cloud_mask.nc": cloud_prop_mask.astype(np.uint8),
-            "generated_cloud_mask.nc": local_generated_cloud_mask.astype(np.uint8),
-            "cloud_mask.nc": local_cloud_mask,
-            "generated_shell_labels.nc": local_generated_shell_labels,
-            "shell_labels.nc": local_shell_labels,
-            "gap_labels.nc": local_gap_labels,
-            "generated_cloud_labels.nc": local_generated_cloud_labels,
-            "cloud_labels.nc": local_cloud_labels,
-            "duration": elapsed_str,
-            "iterations": iteration,
-            "shell_bleed_i": shell_bleed_i,
-            "cloud_bleed_i": cloud_bleed_i
-        }
-
-    else:
-        local_cloud_labels = local_generated_cloud_labels
-        local_shell_labels = local_generated_shell_labels
-        local_cloud_mask = local_generated_cloud_mask
-        local_shell_mask = local_generated_shell_mask
-
-        # --- Exporting ---
-        elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-        return t_new, t, {
-            "ql_mask.nc": ql_raw.astype(np.uint8),
-            "w_mask.nc": w_mask.astype(np.uint8),
-            "generated_shell_mask.nc": local_generated_shell_mask,
-            "shell_mask.nc": local_shell_mask,
-            "gap_mask.nc": local_gap_mask,
-            "generated_cloud_mask.nc": local_generated_cloud_mask,
-            "cloud_mask.nc": local_cloud_mask,
-            "generated_shell_labels.nc": local_generated_shell_labels,
-            "shell_labels.nc": local_shell_labels,
-            "gap_labels.nc": local_gap_labels,
-            "generated_cloud_labels.nc": local_generated_cloud_labels,
-            "cloud_labels.nc": local_cloud_labels,
-            "duration": elapsed_str,
-            "iterations": iteration
-        }
+    # --- Exporting ---
+    elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
+    return t_new, t, {
+        "ql_mask.nc": ql_mask.astype(np.uint8),
+        "shell_mask.nc": shell_prop_mask.astype(np.uint8),
+        "cloud_mask.nc": local_cloud_mask.astype(np.uint8),
+        "combined_mask.nc": local_combined_mask.astype(np.uint8),
+        "free_shell_mask.nc": local_free_shell_mask.astype(np.uint8),
+        "shell_labels.nc": local_shell_labels,
+        "cloud_labels.nc": local_cloud_labels.astype(np.uint32),
+        "combined_labels.nc": local_free_shell_labels,
+        "duration": elapsed_str,
+    }
 
 
 # --- Main Thread ---
@@ -283,7 +204,6 @@ if __name__ == '__main__':
 
     file_paths = {
         "ql": source_input_dir / "ql.nc",
-        "w": source_input_dir / "w.nc",
         "shell": source_input_dir / "shell.nc"
     }
 
@@ -291,16 +211,8 @@ if __name__ == '__main__':
     #Check that files exist
     for name, path in file_paths.items():
         if not path.is_file():
-            if name in ["shell"]:
-                has_shell_prop = False
-                print(f"⚠️ WARNING: Missing shell property (target : {path}). Excluding exports using shell property")
-            else:
-                print(f"❌ ERROR: Missing target dependency: {path}", file=sys.stderr)
-                sys.exit(1)
-
-    if has_shell_prop:
-        EXPORT_REGISTRY["original_shell_mask"] = ("shell_mask", "u1")
-        EXPORT_REGISTRY["original_cloud_mask"] = ("cloud_mask", "u1")
+            print(f"❌ ERROR: Missing target dependency: {path}", file=sys.stderr)
+            sys.exit(1)
 
     # Global structure
     with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta:
@@ -309,7 +221,7 @@ if __name__ == '__main__':
         
         #Switch slicing depending on source of data
         if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(3, num_times, 2)] #all odds except index 1
+            active_timesteps = [t for t in range(83, num_times, 2)] #all odds except index 1
             print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
         else:
             active_timesteps = list(range(num_times))
@@ -345,10 +257,6 @@ if __name__ == '__main__':
             f.createVariable(var_name, data_type, ("time", "z", "y", "x"), 
                                 zlib=True, complevel=4, chunksizes=(1, nz, ny, nx))
 
-        expansion = np.zeros((3,3,3), dtype=bool)
-        expansion[1, 1, :] = True  # X axis
-        expansion[1, :, 1] = True  # Y axis
-        expansion[:, 1, 1] = True  # Z axis
 
         # --- Start Worker Pool ---
         # Package arguments cleanly into a metadata dictionary
@@ -356,11 +264,8 @@ if __name__ == '__main__':
             "paths": {k: str(v) for k, v in file_paths.items()},
             "dx": dx,
             "dy": dy,
-            "ql_dilation": ql_dilation,
             "ql_threshold": ql_threshold,
-            "negative_w_threshold": negative_w_threshold,
-            "expansion": expansion,
-            "has_shell_prop" : has_shell_prop
+            "shell_prop_lower_threshold": shell_prop_lower_threshold
         }
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
@@ -371,13 +276,9 @@ if __name__ == '__main__':
 
         with multiprocessing.Pool(processes=num_cores) as pool:
             for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                if has_shell_prop:
-                    print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}) after {payload['iterations']} shell growth iterations, {payload['cloud_bleed_i']} cloud bleed iterations, and {payload['shell_bleed_i']} shell bleed iterations. Committing to files...")
-                else:
-                    print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}) after {payload['iterations']} iterations. Committing to files...")
-                
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
                 for filename, data_array in payload.items():
-                    if filename in ["duration", "iterations", "shell_bleed_i", "cloud_bleed_i"]:
+                    if filename in ["duration"]:
                         continue
                     var_key = EXPORT_REGISTRY[filename][0]
                     open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
