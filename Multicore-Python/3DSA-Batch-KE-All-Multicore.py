@@ -131,6 +131,7 @@ def compute_bounded_kinetic_energy(da, z_base, template_ds):
 
 # --- Main Thread ---
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
     main_start_time = time.time()
 
     # --- Configurations ---

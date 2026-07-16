@@ -108,6 +108,7 @@ def process_timestep_worker(args):
 
 # --- Main Thread ---
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
     main_start_time = time.time()
 
     # --- Configurations ---

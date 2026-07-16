@@ -150,6 +150,7 @@ def process_timestep_worker(args):
 
 # --- Main Thread ---
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
     main_start_time = time.time()
     # --- Configurations ---
     num_cores = int(os.environ.get("CORE_COUNT", 1))  # Default to 1 core if not specified

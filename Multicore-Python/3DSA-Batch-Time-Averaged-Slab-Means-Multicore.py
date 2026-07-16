@@ -53,6 +53,7 @@ def process_group_worker(args):
 
 # --- Main Thread ---
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
     num_cores = int(os.environ.get("CORE_COUNT", 1))
 
     parser = argparse.ArgumentParser(description="Process 3DSA pipeline for a specific data source.")
