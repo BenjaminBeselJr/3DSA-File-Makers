@@ -100,7 +100,7 @@ def process_timestep_worker(args):
         shell_prop_raw = ds_shell_prop.isel(time=t)
         shell_prop_mask = ((shell_prop_raw.shell >= shell_prop_lower_threshold) & (shell_prop_raw.shell < 1)).compute().values.astype(bool)
         cloud_prop_mask = (shell_prop_raw.shell == 1).compute().values.astype(bool)
-        local_combined_mask = shell_prop_mask | cloud_prop_mask
+        
             
     #--- Step 1 : Obtain Filtered Cloud Mask ---
     #strip small parts of ql
@@ -114,6 +114,7 @@ def process_timestep_worker(args):
 
     #--- Step 2: Obtain Shell Labels ---
     #make labels for combined object
+    local_combined_mask = shell_prop_mask | local_cloud_mask
     local_combined_labels = label(local_combined_mask)
 
     #strip to just the shell

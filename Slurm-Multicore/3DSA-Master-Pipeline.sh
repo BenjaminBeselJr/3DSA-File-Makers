@@ -27,6 +27,8 @@ CONNECTED_QL_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multi
 
 NEIGHBORS_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Neighbors-Multicore.slurm"
 
+BODY_ENTRAINMENT_SLURM="/mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Slurm-Multicore/3DSA-Batch-Body-Entrainment-Multicore.slurm"
+
 # ---------------------------------------------------------------------
 # STAGE 1: Root Tasks (No Dependencies)
 # ---------------------------------------------------------------------
@@ -58,8 +60,11 @@ echo "✅ Stage 2C Queued: Nearest ql shell distance calculation (Job ID: $JOB_N
 JOB_CONN_QL=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL --export=ALL,data_source="$DATA_SRC" "$CONNECTED_QL_SLURM")
 echo "✅ Stage 2D Queued: Connected ql shell distance (Job ID: $JOB_CONN_QL)"
 
+JOB_BODY_ENTRAINMENT=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_SHELL --export=ALL,data_source="$DATA_SRC" "$BODY_ENTRAINMENT_SLURM")
+echo "✅ Stage 2E Queued: Body Entrainment (Job ID: $JOB_BODY_ENTRAINMENT)"
+
 # ---------------------------------------------------------------------
-# STAGE 3: Slab averages and Neighbors
+# STAGE 3: Slab averages, Neighbors
 # ---------------------------------------------------------------------
 JOB_SLAB=$(sbatch --parsable --cpus-per-task=$CORES --dependency=afterok:$JOB_STATS:$JOB_KE --export=ALL,data_source="$DATA_SRC" "$SLAB_SLURM")
 echo "✅ Stage 3A Queued: Slab Averages (Job ID: $JOB_SLAB)"

@@ -7,7 +7,7 @@
 #SBATCH --partition=long
 #SBATCH --mem=0
 
-#SBATCH --job-name=b-vpg-and-vpg-b
+#SBATCH --job-name=body-entrainment
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
@@ -30,6 +30,7 @@ echo "Starting job execution for source: $DATA_SRC"
 echo "---> Slurm allocated ${SLURM_CPUS_PER_TASK} cores. Forwarding CORE_COUNT=${CORE_COUNT} to Python."
 echo "---> Runtime text tracking directed to: $LOG_DIR"
 
-/usr/bin/time /usr/bin/python3 /mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Multicore-Python/3DSA-B-VPG-and-VPGB-Multicore.py  --data_source "$DATA_SRC"\
+/usr/bin/time /usr/bin/python3 /mnt/stor-pool-01/users/2821011/3DSA-File-Makers/Multicore-Python/3DSA-Body-Entrainment-Multicore.py --data_source "$DATA_SRC"\
   > "${LOG_DIR}/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" \
   2> "${LOG_DIR}/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.err"
+

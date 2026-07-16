@@ -65,34 +65,34 @@ def process_timestep_worker(args):
     z_coordinates = cfg["z_coordinates"]
 
     #load datasets
-    with  xr.open_dataset(paths["cloud_mask"], decode_times=False, engine="netcdf4") as ds_cloud_mask, \
-         xr.open_dataset(paths["combined_labels"], decode_times=False, engine="netcdf4") as ds_combined_labels, \
-         xr.open_dataset(paths["cloud_labels"], decode_times=False, engine="netcdf4") as ds_cloud_labels, \
-         xr.open_dataset(paths["shell_labels"], decode_times=False, engine="netcdf4") as ds_shell_labels:
+    with  nc.Dataset(paths["cloud_mask"], "r") as ds_cloud_mask, \
+         nc.Dataset(paths["combined_labels"], "r") as ds_combined_labels, \
+         nc.Dataset(paths["cloud_labels"], "r") as ds_cloud_labels, \
+         nc.Dataset(paths["shell_labels"], "r") as ds_shell_labels:
 
-        combined_labels_slice = ds_combined_labels.labels.isel(time=t).compute().values
-        cloud_labels_slice = ds_cloud_labels.cloud_labels.isel(time=t).compute().values
-        shell_labels_slice = ds_shell_labels.shell_labels.isel(time=t).compute().values
+        combined_labels_slice = ds_combined_labels.variables["labels"][t, :, :, :]
+        cloud_labels_slice = ds_cloud_labels.variables["cloud_labels"][t, :, :, :]
+        shell_labels_slice = ds_shell_labels.variables["shell_labels"][t, :, :, :]
+        cloud_mask_slice = ds_cloud_mask.variables["cloud_mask"][t, :, :, :]
 
-        cloud_mask_slice = ds_cloud_mask.cloud_mask.isel(time=t).compute().values
-
+    grid_shape = shell_labels_slice.shape
 
     #initialize local arrays for this timestep
-    local_shell_origin = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_shell_termination = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_shell_depth = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_cloud_bottom = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_cloud_top = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_cloud_depth = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_shell_origin = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_shell_termination = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_shell_depth = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_cloud_bottom = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_cloud_top = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_cloud_depth = np.full(grid_shape, np.nan, dtype=np.float32)
     
-    local_dfst = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_dfct = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_ndfcb = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
-    local_ndfso = np.full(shell_labels_slice.shape, np.nan, dtype=np.float32)
+    local_dfst = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_dfct = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_ndfcb = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_ndfso = np.full(grid_shape, np.nan, dtype=np.float32)
 
-    local_congestus_mask = np.zeros(shell_labels_slice.shape, dtype=np.uint8)
-    local_deep_mask = np.zeros(shell_labels_slice.shape, dtype=np.uint8)
-    local_shallow_mask = np.zeros(shell_labels_slice.shape, dtype=np.uint8)
+    local_congestus_mask = np.zeros(grid_shape, dtype=np.uint8)
+    local_deep_mask = np.zeros(grid_shape, dtype=np.uint8)
+    local_shallow_mask = np.zeros(grid_shape, dtype=np.uint8)
 
     matching_labels = set(np.unique(cloud_labels_slice))
     matching_labels.discard(0)
