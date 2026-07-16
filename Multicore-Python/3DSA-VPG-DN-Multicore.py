@@ -1,4 +1,5 @@
 import os
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import math
 import numpy as np
 import xarray as xr
