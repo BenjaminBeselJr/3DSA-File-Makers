@@ -49,25 +49,47 @@ def filter_e(eSet, t, maxEntrainmentMagnitude):
     return xr.where(abs(sliced_E) < maxEntrainmentMagnitude, sliced_E, np.nan).values
 
 # --- Multiprocessing Worker Function ---
-def process_timestep_worker(args):
+def process_timestep_worker(task):
     """
     Worker task running on an isolated core. Computes connected-component components 
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new, t, arrays, dilation_const = args
+    t_new = task["t_idx"]
+    t = task["t_original"]
+    paths = task["file_paths"]
+    dilation_const = task["dilation_const"]
+    max_ent_mag = task["max_entrainment"]
 
-    cloud_labels = arrays["cloud_labels"]
-    combined_labels = arrays["combined_labels"]
-    shell_labels = arrays["shell_labels"]
+    with xr.open_dataset(paths["cloud_labels"], decode_times=False) as ds_cloud:
+        cloud_labels = ds_cloud.cloud_labels.isel(time=t_new).values
+        
+    with xr.open_dataset(paths["combined_labels"], decode_times=False) as ds_comb:
+        combined_labels = ds_comb.labels.isel(time=t_new).values
+        
+    with xr.open_dataset(paths["shell_labels"], decode_times=False) as ds_shell:
+        shell_labels = ds_shell.shell_labels.isel(time=t_new).values
 
     # pre-allocate sets
-    nz, ny, nx = cloud_labels.shape #create shape needed for exports
-
+    nz, ny, nx = cloud_labels.shape
     out_shell_label_ent = np.zeros((nz, ny, nx), dtype=np.float32)
     out_cloud_label_ent = np.zeros((nz, ny, nx), dtype=np.float32)
     total_shell_ent_profile = np.zeros(nz, dtype=np.float32)
     total_cloud_ent_profile = np.zeros(nz, dtype=np.float32)
+
+    with xr.open_dataset(paths["netE"], decode_times=False) as ds_e:
+        # Helper inline function to slice and filter on the fly
+        def load_and_filter(var_name):
+            sliced = ds_e[var_name].isel(time=t)
+            return xr.where(abs(sliced) < max_ent_mag, sliced, np.nan).values
+
+        cloud_e_x = load_and_filter("netE_flux_x_ql")
+        cloud_e_y = load_and_filter("netE_flux_y_ql")
+        cloud_e_z = load_and_filter("netE_flux_z_ql")
+
+        shell_e_x = load_and_filter("netE_flux_x_shell")
+        shell_e_y = load_and_filter("netE_flux_y_shell")
+        shell_e_z = load_and_filter("netE_flux_z_shell")
 
     # ----------------------------------------------------------------------
     # Step 1 - Shell Entrainment (Accumulates Shell Fluxes near Cloud Edges)
@@ -86,49 +108,48 @@ def process_timestep_worker(args):
         contained_cloud_list = np.unique(cloud_labels[label_mask])
         contained_cloud_list = contained_cloud_list[contained_cloud_list != 0]
 
-        for c_label_i in contained_cloud_list:
-            current_cloud = (cloud_labels == c_label_i)
+        if len(contained_cloud_list) == 0:
+            continue
 
-            # Dilate the cloud for overlap
-            dilated_cloud = dilate_mask(current_cloud, dilation_const)
+        combined_cloud_mask = np.isin(cloud_labels, contained_cloud_list)
 
-            if not np.any(dilated_cloud):
-                continue
+        dilated_clouds = dilate_mask(combined_cloud_mask, dilation_const)
 
-            e_x_mask = dilated_cloud | np.roll(dilated_cloud, shift=1, axis=2)
-            e_y_mask = dilated_cloud | np.roll(dilated_cloud, shift=1, axis=1)
-            e_z_mask = dilated_cloud | np.roll(dilated_cloud, shift=1, axis=0)
-            e_z_mask[0, :, :] = dilated_cloud[0, :, :] # prevent rolling along boundary
+        if not np.any(dilated_clouds):
+            continue
 
-            # sum x and y
-            sum_x = np.sum(arrays["shell_e_x"] * e_x_mask, axis=(1, 2))
-            sum_y = np.sum(arrays["shell_e_y"] * e_y_mask, axis=(1, 2))
+        e_x_mask = dilated_clouds | np.roll(dilated_clouds, shift=1, axis=2)
+        e_y_mask = dilated_clouds | np.roll(dilated_clouds, shift=1, axis=1)
+        e_z_mask = dilated_clouds | np.roll(dilated_clouds, shift=1, axis=0)
+        e_z_mask[0, :, :] = dilated_clouds[0, :, :] # prevent rolling along boundary
 
-            shell_target = (shell_labels == label_i)
-            shell_above = shell_target
-            shell_below = np.zeros_like(shell_target)
-            shell_below[1:] = shell_target[:-1]
+        # sum x and y
+        sum_x = np.sum(shell_e_x * e_x_mask, axis=(1, 2))
+        sum_y = np.sum(shell_e_y * e_y_mask, axis=(1, 2))
 
-            case1_mask = e_z_mask & shell_above & ~shell_below # case 1: shell above but not below
-            case2_mask = e_z_mask & shell_below & ~shell_above # case 2: shell below but not above
+        shell_target = (shell_labels == label_i)
+        shell_above = shell_target
+        shell_below = np.zeros_like(shell_target)
+        shell_below[1:] = shell_target[:-1]
 
-            # sum z
-            sum_z_case1 = np.sum(arrays["shell_e_z"] * case1_mask, axis=(1, 2))
-            sum_z_case2 = np.sum(arrays["shell_e_z"] * case2_mask, axis=(1, 2))
+        case1_mask = e_z_mask & shell_above & ~shell_below # case 1: shell above but not below
+        case2_mask = e_z_mask & shell_below & ~shell_above # case 2: shell below but not above
 
-            sum_z = np.zeros(nz, dtype=np.float32)
-            sum_z += sum_z_case1
-            sum_z[:-1] += sum_z_case2[1:]  # Shift map back down safely
+        # sum z
+        sum_z_case1 = np.sum(shell_e_z * case1_mask, axis=(1, 2))
+        sum_z_case2 = np.sum(shell_e_z * case2_mask, axis=(1, 2))
 
-            # apply sums
-            sum_total = (sum_x + sum_y + sum_z)
-            broadcasted_sum = sum_total[:, np.newaxis, np.newaxis]
+        sum_z = np.zeros(nz, dtype=np.float32)
+        sum_z += sum_z_case1
+        sum_z[:-1] += sum_z_case2[1:]  # Shift map back down safely
 
-            out_shell_label_ent += broadcasted_sum * label_mask
-            total_shell_ent_profile += sum_total
+        # apply sums
+        sum_total = (sum_x + sum_y + sum_z)
+        broadcasted_sum = sum_total[:, np.newaxis, np.newaxis]
+
+        out_shell_label_ent += broadcasted_sum * label_mask
+        total_shell_ent_profile += sum_total
         
-        if len(contained_cloud_list) > 0:
-            del current_cloud, dilated_cloud, e_x_mask, e_y_mask, e_z_mask, case1_mask, case2_mask
 
     # ----------------------------------------------------------------------
     # Step 2 - Cloud Entrainment (Accumulates Cloud Fluxes near Shell Edges)
@@ -159,8 +180,8 @@ def process_timestep_worker(args):
         e_z_mask[0, :, :] = dilated_shell[0, :, :] # prevent rolling along boundary
 
         # sum x,y
-        sum_x = np.sum(arrays["cloud_e_x"] * e_x_mask, axis=(1, 2))
-        sum_y = np.sum(arrays["cloud_e_y"] * e_y_mask, axis=(1, 2))
+        sum_x = np.sum(cloud_e_x * e_x_mask, axis=(1, 2))
+        sum_y = np.sum(cloud_e_y * e_y_mask, axis=(1, 2))
 
         cloud_above = cloud_target
         cloud_below = np.zeros_like(cloud_target)
@@ -169,8 +190,8 @@ def process_timestep_worker(args):
         case1_mask = e_z_mask & cloud_above & ~cloud_below # case 1: shell above but not below
         case2_mask = e_z_mask & cloud_below & ~cloud_above # case 2: shell below but not above
 
-        sum_z_case1 = np.sum(arrays["cloud_e_z"] * case1_mask, axis=(1, 2))
-        sum_z_case2 = np.sum(arrays["cloud_e_z"] * case2_mask, axis=(1, 2))
+        sum_z_case1 = np.sum(cloud_e_z * case1_mask, axis=(1, 2))
+        sum_z_case2 = np.sum(cloud_e_z * case2_mask, axis=(1, 2))
 
         sum_z = np.zeros(nz, dtype=np.float32)
         sum_z += sum_z_case1
@@ -182,8 +203,6 @@ def process_timestep_worker(args):
         out_cloud_label_ent += broadcasted_sum * cloud_target
         total_cloud_ent_profile += sum_total
 
-        if 'dilated_shell' in locals():
-            del cloud_target, current_shell, dilated_shell, e_x_mask, e_y_mask, e_z_mask, case1_mask, case2_mask
             
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
@@ -328,49 +347,33 @@ if __name__ == '__main__':
         }
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
-        pool_tasks = []
-        # Open files once in the main thread to read and pass raw arrays to workers
-        with xr.open_dataset(file_paths["netE"], decode_times=False) as ds_e, \
-             xr.open_dataset(file_paths["cloud_labels"], decode_times=False) as ds_cloud, \
-             xr.open_dataset(file_paths["combined_labels"], decode_times=False) as ds_comb, \
-             xr.open_dataset(file_paths["shell_labels"], decode_times=False) as ds_shell:
-
-            # 2. Define a generator function to yield tasks ONE by ONE instead of pre-allocating a list
-            def task_generator():
+        def task_generator():
                 for new_idx, t_original in enumerate(active_timesteps):
-                    payload_arrays = {
-                        "cloud_labels": ds_cloud.cloud_labels.isel(time=new_idx).values,
-                        "combined_labels": ds_comb.labels.isel(time=new_idx).values,
-                        "shell_labels": ds_shell.shell_labels.isel(time=new_idx).values,
-
-                        "cloud_e_x": filter_e(ds_e.netE_flux_x_ql, t_original, max_entrainment_magnitude),
-                        "cloud_e_y": filter_e(ds_e.netE_flux_y_ql, t_original, max_entrainment_magnitude),
-                        "cloud_e_z": filter_e(ds_e.netE_flux_z_ql, t_original, max_entrainment_magnitude),
-
-                        "shell_e_x": filter_e(ds_e.netE_flux_x_shell, t_original, max_entrainment_magnitude),
-                        "shell_e_y": filter_e(ds_e.netE_flux_y_shell, t_original, max_entrainment_magnitude),
-                        "shell_e_z": filter_e(ds_e.netE_flux_z_shell, t_original, max_entrainment_magnitude),
+                    yield {
+                        "t_idx": new_idx,
+                        "t_original": t_original,
+                        "file_paths": {k: str(v) for k, v in file_paths.items()},
+                        "dilation_const": dilation_const,
+                        "max_entrainment": max_entrainment_magnitude
                     }
-                    yield (new_idx, t_original, payload_arrays, dilation_const)
 
-            # 3. Feed the generator directly to the pool
-            with multiprocessing.Pool(processes=num_cores) as pool:
-                # task_generator() ensures only 'num_cores' worth of timesteps are in memory at a given time
-                for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, task_generator()):
-                    print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
-                    for filename, data_array in payload.items():
-                        if filename in ["duration"]:
-                            continue
-                        var_key = EXPORT_REGISTRY[filename][0]
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            # task_generator() ensures only 'num_cores' worth of timesteps are in memory at a given time
+            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, task_generator()):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+                for filename, data_array in payload.items():
+                    if filename in ["duration"]:
+                        continue
+                    var_key = EXPORT_REGISTRY[filename][0]
+                    
+                    if filename == "slab_shell_label_entrainment.nc" or filename == "slab_cloud_label_entrainment.nc":
+                        open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
+                    else:
+                        open_files[filename].variables[var_key][t_idx, :] = data_array
                         
-                        if filename == "slab_shell_label_entrainment.nc" or filename == "slab_cloud_label_entrainment.nc":
-                            open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
-                        else:
-                            open_files[filename].variables[var_key][t_idx, :] = data_array
-                            
-                        open_files[filename].sync()
+                    open_files[filename].sync()
 
-                    gc.collect()
+                gc.collect()
 
         main_elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - main_start_time))
         print(f"\n✅ All computation and exporting complete in ({main_elapsed_str})")
