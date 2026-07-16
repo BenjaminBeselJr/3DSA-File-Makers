@@ -124,8 +124,8 @@ def process_timestep_worker(task):
         e_z_mask[0, :, :] = dilated_clouds[0, :, :] # prevent rolling along boundary
 
         # sum x and y
-        sum_x = np.sum(shell_e_x * e_x_mask, axis=(1, 2))
-        sum_y = np.sum(shell_e_y * e_y_mask, axis=(1, 2))
+        sum_x = np.nansum(shell_e_x * e_x_mask, axis=(1, 2))
+        sum_y = np.nansum(shell_e_y * e_y_mask, axis=(1, 2))
 
         shell_target = (shell_labels == label_i)
         shell_above = shell_target
@@ -136,8 +136,8 @@ def process_timestep_worker(task):
         case2_mask = e_z_mask & shell_below & ~shell_above # case 2: shell below but not above
 
         # sum z
-        sum_z_case1 = np.sum(shell_e_z * case1_mask, axis=(1, 2))
-        sum_z_case2 = np.sum(shell_e_z * case2_mask, axis=(1, 2))
+        sum_z_case1 = np.nansum(shell_e_z * case1_mask, axis=(1, 2))
+        sum_z_case2 = np.nansum(shell_e_z * case2_mask, axis=(1, 2))
 
         sum_z = np.zeros(nz, dtype=np.float32)
         sum_z += sum_z_case1
@@ -180,8 +180,8 @@ def process_timestep_worker(task):
         e_z_mask[0, :, :] = dilated_shell[0, :, :] # prevent rolling along boundary
 
         # sum x,y
-        sum_x = np.sum(cloud_e_x * e_x_mask, axis=(1, 2))
-        sum_y = np.sum(cloud_e_y * e_y_mask, axis=(1, 2))
+        sum_x = np.nansum(cloud_e_x * e_x_mask, axis=(1, 2))
+        sum_y = np.nansum(cloud_e_y * e_y_mask, axis=(1, 2))
 
         cloud_above = cloud_target
         cloud_below = np.zeros_like(cloud_target)
@@ -190,8 +190,8 @@ def process_timestep_worker(task):
         case1_mask = e_z_mask & cloud_above & ~cloud_below # case 1: shell above but not below
         case2_mask = e_z_mask & cloud_below & ~cloud_above # case 2: shell below but not above
 
-        sum_z_case1 = np.sum(cloud_e_z * case1_mask, axis=(1, 2))
-        sum_z_case2 = np.sum(cloud_e_z * case2_mask, axis=(1, 2))
+        sum_z_case1 = np.nansum(cloud_e_z * case1_mask, axis=(1, 2))
+        sum_z_case2 = np.nansum(cloud_e_z * case2_mask, axis=(1, 2))
 
         sum_z = np.zeros(nz, dtype=np.float32)
         sum_z += sum_z_case1
