@@ -127,7 +127,8 @@ def process_timestep_worker(args):
             out_shell_label_ent += broadcasted_sum * label_mask
             total_shell_ent_profile += sum_total
         
-        del current_cloud, dilated_cloud, e_x_mask, e_y_mask, e_z_mask, case1_mask, case2_mask
+        if len(contained_cloud_list) > 0:
+            del current_cloud, dilated_cloud, e_x_mask, e_y_mask, e_z_mask, case1_mask, case2_mask
 
     # ----------------------------------------------------------------------
     # Step 2 - Cloud Entrainment (Accumulates Cloud Fluxes near Shell Edges)
@@ -181,7 +182,8 @@ def process_timestep_worker(args):
         out_cloud_label_ent += broadcasted_sum * cloud_target
         total_cloud_ent_profile += sum_total
 
-        del cloud_target, current_shell, dilated_shell, e_x_mask, e_y_mask, e_z_mask, case1_mask, case2_mask
+        if 'dilated_shell' in locals():
+            del cloud_target, current_shell, dilated_shell, e_x_mask, e_y_mask, e_z_mask, case1_mask, case2_mask
             
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
