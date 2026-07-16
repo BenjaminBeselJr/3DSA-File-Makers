@@ -282,7 +282,10 @@ if __name__ == '__main__':
         ds_initial_thermo = ds_t.isel(time=t_conds).compute()
         ds_initial_general = ds_g.isel(time=t_conds).compute()
 
-    rho_profile = ds_initial_thermo.rhoref.values
+    if source_key in ["SEUS", "RICO"]:
+        rho_profile = ds_initial_general.rhoref.values
+    else:
+        rho_profile = ds_initial_thermo.rhoref.values
     u_o_da = ds_initial_general.u
     v_o_da = ds_initial_general.v
     
