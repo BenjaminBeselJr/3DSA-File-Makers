@@ -126,14 +126,30 @@ def process_timestep_worker(args):
 
 
     #load datasets
-    with xr.open_dataset(paths["u"], decode_times=False, engine="netcdf4") as ds_u, \
-         xr.open_dataset(paths["v"], decode_times=False, engine="netcdf4") as ds_v:
+    with nc.Dataset(paths["u"], "r", parallel=False) as ds_u, \
+         nc.Dataset(paths["v"], "r", parallel=False) as ds_v:
          
-        u_slice = ds_u.u.isel(time=t)
-        v_slice = ds_v.v.isel(time=t)
-        u_slice = u_slice.rename({'xh':'x'}).interp(x=x_target)
-        v_slice = v_slice.rename({'yh':'y'}).interp(y=y_target)
-        z_coords = u_slice.z.values
+        u_raw = ds_u.variables["u"][t, :, :, :]  # Shape: (nz, ny, nx_staggered)
+        v_raw = ds_v.variables["v"][t, :, :, :]  # Shape: (nz, ny_staggered, nx)
+        
+        z_coords = ds_u.variables["z"][:]
+        y_coords = ds_u.variables["y"][:]    # (ny) - Cell centers for U coordinate
+        xh_coords = ds_u.variables["xh"][:]  # Staggered x-dimension for u
+        
+        yh_coords = ds_v.variables["yh"][:]  # Staggered y-dimension for v
+        x_coords = ds_v.variables["x"][:]    # (nx) - Cell centers for V coordinate
+
+    u_slice = xr.DataArray(
+        u_raw, 
+        coords={"z": z_coords, "y": y_coords, "xh": xh_coords}, 
+        dims=["z", "y", "xh"]
+    ).interp(xh=x_target).rename({"xh": "x"}) # Rename to align with scalar 'x'
+    
+    v_slice = xr.DataArray(
+        v_raw, 
+        coords={"z": z_coords, "yh": yh_coords, "x": x_coords}, 
+        dims=["z", "yh", "x"]
+    ).interp(yh=y_target).rename({"yh": "y"}) # Rename to align with scalar 'y'
 
     rho_da = xr.DataArray(rho_profile, coords={'z': z_coords}, dims=['z'])
 

@@ -65,10 +65,10 @@ def process_timestep_worker(args):
     z_coordinates = cfg["z_coordinates"]
 
     #load datasets
-    with  nc.Dataset(paths["cloud_mask"], "r") as ds_cloud_mask, \
-         nc.Dataset(paths["combined_labels"], "r") as ds_combined_labels, \
-         nc.Dataset(paths["cloud_labels"], "r") as ds_cloud_labels, \
-         nc.Dataset(paths["shell_labels"], "r") as ds_shell_labels:
+    with  nc.Dataset(paths["cloud_mask"], "r", parallel=False) as ds_cloud_mask, \
+         nc.Dataset(paths["combined_labels"], "r", parallel=False) as ds_combined_labels, \
+         nc.Dataset(paths["cloud_labels"], "r", parallel=False) as ds_cloud_labels, \
+         nc.Dataset(paths["shell_labels"], "r", parallel=False) as ds_shell_labels:
 
         combined_labels_slice = ds_combined_labels.variables["labels"][t, :, :, :]
         cloud_labels_slice = ds_cloud_labels.variables["cloud_labels"][t, :, :, :]
