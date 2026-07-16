@@ -64,7 +64,7 @@ def process_timestep_worker(args):
             "Shallow": ds_shal.variables["shallow_mask"][t_new, :, :, :] > 0,
             "Congestus": ds_cong.variables["congestus_mask"][t_new, :, :, :] > 0,
             "Deep": ds_deep.variables["deep_mask"][t_new, :, :, :] > 0,
-            "Free_shell": ds_free.variables["free_shell_mask"][t_new, :, :, :] > 0
+            "Free_shell": ds_free.variables["shell_mask"][t_new, :, :, :] > 0
         }
 
         shell_entrainment = ds_shell_ent.variables["entrainment"][t_new, :, :, :]
