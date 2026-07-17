@@ -256,7 +256,7 @@ if __name__ == '__main__':
     with xr.open_dataset(file_registry["shell_mask"], decode_times=False) as ds_meta:
         num_times = int(ds_meta.time.size)
         nz = ds_meta.shell_mask.shape[1]
-        active_timesteps = [t for t in range(83, num_times, 2)] if source_key in ["SEUS", "RICO"] else list(range(num_times))
+        active_timesteps = [t for t in range(82, num_times, 2)] if source_key in ["SEUS", "RICO"] else list(range(num_times))
         time_vals = ds_meta.time.values[active_timesteps]
         num_output_times = len(active_timesteps)
         z_vals = ds_meta.z.values

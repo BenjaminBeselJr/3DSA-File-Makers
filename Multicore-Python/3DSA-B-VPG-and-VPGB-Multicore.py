@@ -265,7 +265,7 @@ if __name__ == '__main__':
 
         #Switch slicing depending on source of data
         if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(83, num_times, 2)] #all odds except index 1
+            active_timesteps = [t for t in range(82, num_times, 2)] #all evens
             print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
         else:
             active_timesteps = list(range(num_times))
