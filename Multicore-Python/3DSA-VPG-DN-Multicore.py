@@ -283,7 +283,7 @@ if __name__ == '__main__':
 
         all_time_vals = ds_ex_e.time.values
 
-        start_time = 151200
+        start_time = 154800
         step_delta = 7200
 
         

@@ -226,7 +226,7 @@ if __name__ == '__main__':
 
         all_time_vals = ds_ex_e.time.values
 
-        start_time = 151200
+        start_time = 154800
         step_delta = 7200
 
         
@@ -234,6 +234,11 @@ if __name__ == '__main__':
             float(t_val) for t_val in all_time_vals
             if t_val >= start_time and (t_val - start_time) % step_delta == 0
         ]
+
+        # ─── TEMPORARY DEBUG SLICE ──────────────────────────────────────────
+        # Change [:3] to whatever number of test timesteps you want (e.g., [:5], [:1])
+        target_times = target_times[:3] 
+        # ────────────────────────────────────────────────────────────────────
 
         if not target_times:
             print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)

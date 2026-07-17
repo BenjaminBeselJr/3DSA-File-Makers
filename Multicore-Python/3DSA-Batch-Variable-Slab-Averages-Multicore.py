@@ -262,7 +262,7 @@ if __name__ == '__main__':
         nz = ds_meta.shell_mask.shape[1]
         all_time_vals = ds_meta.time.values
         
-        start_time = 151200
+        start_time = 154800
         step_delta = 7200
 
         
