@@ -44,10 +44,6 @@ def dilate_mask(source, dilateAmount):
     else:
         return source
 
-def filter_e(eSet, t, maxEntrainmentMagnitude):
-    sliced_E = eSet.isel(time=t).compute()
-    return xr.where(abs(sliced_E) < maxEntrainmentMagnitude, sliced_E, np.nan).values
-
 # --- Multiprocessing Worker Function ---
 def process_timestep_worker(task):
     """
@@ -55,20 +51,20 @@ def process_timestep_worker(task):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new = task["t_idx"]
-    t = task["t_original"]
+    t_val = task["t_val"]
+    t_idx = task["t_idx"]
     paths = task["file_paths"]
     dilation_const = task["dilation_const"]
     max_ent_mag = task["max_entrainment"]
 
     with xr.open_dataset(paths["cloud_labels"], decode_times=False) as ds_cloud:
-        cloud_labels = ds_cloud.cloud_labels.isel(time=t_new).values
+        cloud_labels = ds_cloud.cloud_labels.sel(time=t_val).values
         
     with xr.open_dataset(paths["combined_labels"], decode_times=False) as ds_comb:
-        combined_labels = ds_comb.labels.isel(time=t_new).values
+        combined_labels = ds_comb.labels.sel(time=t_val).values
         
     with xr.open_dataset(paths["shell_labels"], decode_times=False) as ds_shell:
-        shell_labels = ds_shell.shell_labels.isel(time=t_new).values
+        shell_labels = ds_shell.shell_labels.sel(time=t_val).values
 
     # pre-allocate sets
     nz, ny, nx = cloud_labels.shape
@@ -80,7 +76,7 @@ def process_timestep_worker(task):
     with xr.open_dataset(paths["netE"], decode_times=False) as ds_e:
         # Helper inline function to slice and filter on the fly
         def load_and_filter(var_name):
-            sliced = ds_e[var_name].isel(time=t)
+            sliced = ds_e[var_name].sel(time=t_val)
             return xr.where(abs(sliced) < max_ent_mag, sliced, np.nan).values
 
         cloud_e_x = load_and_filter("netE_flux_x_ql")
@@ -206,7 +202,7 @@ def process_timestep_worker(task):
             
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, {
+    return t_idx, t_val, {
         "slab_shell_entrainment.nc": total_shell_ent_profile,
         "slab_shell_label_entrainment.nc": out_shell_label_ent,
         "slab_cloud_entrainment.nc": total_cloud_ent_profile,
@@ -285,19 +281,27 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["netE"], decode_times=False, engine="netcdf4") as ds_meta:
-        num_times = int(ds_meta.time.size)
-        nz, ny, nx = ds_meta.netE_ql.shape[1:]
-        
-        #Switch slicing depending on source of data
-        if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(82, num_times, 2)] #all odds except index 1
-            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
-        else:
-            active_timesteps = list(range(num_times))
+    with xr.open_dataset(file_paths["cloud_labels"], decode_times=False, engine="netcdf4") as ds_meta:
+        nz, ny, nx = ds_meta.cloud_labels.shape[1:]
 
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        all_time_vals = ds_meta.time.values
+
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
+
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
         x_vals = ds_meta.x.values
@@ -348,10 +352,10 @@ if __name__ == '__main__':
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         def task_generator():
-                for new_idx, t_original in enumerate(active_timesteps):
+                for t_idx, t_val in enumerate(target_times):
                     yield {
-                        "t_idx": new_idx,
-                        "t_original": t_original,
+                        "t_idx": t_idx,
+                        "t_val": t_val,
                         "file_paths": {k: str(v) for k, v in file_paths.items()},
                         "dilation_const": dilation_const,
                         "max_entrainment": max_entrainment_magnitude
@@ -359,8 +363,8 @@ if __name__ == '__main__':
 
         with multiprocessing.Pool(processes=num_cores) as pool:
             # task_generator() ensures only 'num_cores' worth of timesteps are in memory at a given time
-            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, task_generator()):
-                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_val, payload in pool.imap_unordered(process_timestep_worker, task_generator()):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Physical Time: {t_val:.1f}) finished in ({payload['duration']}). Committing to files...")
                 for filename, data_array in payload.items():
                     if filename in ["duration"]:
                         continue

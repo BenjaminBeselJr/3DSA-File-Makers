@@ -85,7 +85,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new, t, cfg = args
+    t_idx, t_val, cfg = args
 
     paths = cfg["paths"]
 
@@ -96,10 +96,10 @@ def process_timestep_worker(args):
     with xr.open_dataset(paths["ql"], decode_times=False, engine="netcdf4") as ds_ql, \
         xr.open_dataset(paths["shell"], decode_times=False, engine="netcdf4") as ds_shell_prop:
 
-        ql_raw = (ds_ql.ql.isel(time=t).fillna(0) > ql_threshold).compute().values.astype(bool)
-        shell_prop_raw = ds_shell_prop.isel(time=t)
+        ql_raw = (ds_ql.ql.sel(time=t_val).fillna(0) > ql_threshold).compute().values.astype(bool)
+        shell_prop_raw = ds_shell_prop.sel(time=t_val)
         shell_prop_mask = ((shell_prop_raw.shell >= shell_prop_lower_threshold) & (shell_prop_raw.shell < 1)).compute().values.astype(bool)
-        cloud_prop_mask = (shell_prop_raw.shell == 1).compute().values.astype(bool)
+        cloud_prop_mask = (shell_prop_raw.shell > 0.99).compute().values.astype(bool)
         
             
     #--- Step 1 : Obtain Filtered Cloud Mask ---
@@ -107,18 +107,20 @@ def process_timestep_worker(args):
     ql_labels, ql_mask = strip_small_components(ql_raw)
 
     #apply to cloud mask
-    restricted_cloud_mask = np.where(ql_mask, cloud_prop_mask, False)
+    restricted_cloud_mask = ql_mask & cloud_prop_mask
 
-    #strip small parts again (just in case)
-    local_cloud_labels, local_cloud_mask = strip_small_components(restricted_cloud_mask)
+    local_cloud_mask = restricted_cloud_mask
+    local_cloud_labels = label(local_cloud_mask)
+
+    local_shell_mask = shell_prop_mask & ~local_cloud_mask
 
     #--- Step 2: Obtain Shell Labels ---
     #make labels for combined object
-    local_combined_mask = shell_prop_mask | local_cloud_mask
+    local_combined_mask = local_shell_mask | local_cloud_mask
     local_combined_labels = label(local_combined_mask)
 
     #strip to just the shell
-    local_shell_labels = np.where(shell_prop_mask, local_combined_labels, 0)
+    local_shell_labels = np.where(local_shell_mask, local_combined_labels, 0)
     
     #--- Step 3: Find Free Standing Shells ---
     #get cloud labels for combined objects
@@ -135,9 +137,9 @@ def process_timestep_worker(args):
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, {
+    return t_idx, t_val, {
         "ql_mask.nc": ql_mask.astype(np.uint8),
-        "shell_mask.nc": shell_prop_mask.astype(np.uint8),
+        "shell_mask.nc": local_shell_mask.astype(np.uint8),
         "cloud_mask.nc": local_cloud_mask.astype(np.uint8),
         "combined_mask.nc": local_combined_mask.astype(np.uint8),
         "free_shell_mask.nc": local_free_shell_mask.astype(np.uint8),
@@ -206,7 +208,8 @@ if __name__ == '__main__':
 
     file_paths = {
         "ql": source_input_dir / "ql.nc",
-        "shell": source_input_dir / "shell.nc"
+        "shell": source_input_dir / "shell.nc",
+        "netE": source_input_dir / "netE.nc"
     }
 
     has_shell_prop = True
@@ -217,19 +220,27 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta:
-        num_times = int(ds_meta.time.size)
+    with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta, \
+        xr.open_dataset(file_paths["netE"], decode_times=False, engine="netcdf4").netE_flux_y_shell as ds_ex_e:
         nz, ny, nx = ds_meta.ql.shape[1:]
-        
-        #Switch slicing depending on source of data
-        if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(82, num_times, 2)] #all odds except index 1
-            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
-        else:
-            active_timesteps = list(range(num_times))
 
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        all_time_vals = ds_ex_e.time.values
+
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
 
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
@@ -272,13 +283,13 @@ if __name__ == '__main__':
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         pool_tasks = [
-            (new_idx, t_original, worker_config) 
-            for new_idx, t_original in enumerate(active_timesteps)
+            (t_idx, t_val, worker_config) 
+            for t_idx, t_val in enumerate(target_times)
         ]
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_val, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Physical Time: {t_val:.1f}) finished in ({payload['duration']}). Committing to files...")
                 for filename, data_array in payload.items():
                     if filename in ["duration"]:
                         continue

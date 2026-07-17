@@ -110,7 +110,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new, t, cfg = args
+    t_idx, t_val, cfg = args
 
     paths = cfg["paths"]
     dx, dy = cfg["dx"], cfg["dy"]
@@ -129,8 +129,10 @@ def process_timestep_worker(args):
     #load datasets
     with xr.open_dataset(paths["w"], decode_times=False, engine="netcdf4") as ds_w:
          
-        w_slice = ds_w.w.isel(time=t)
+        w_slice = ds_w.w.sel(time=t_val)
         w_slice = w_slice.rename({'zh':'z'}).interp(z=z_target)
+
+        w_vals = w_slice.values
         z_coords = w_slice.z.values
 
     rho_da = xr.DataArray(rho_profile, coords={'z': z_coords}, dims=['z'])
@@ -178,7 +180,7 @@ def process_timestep_worker(args):
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, {
+    return t_idx, t_val, {
         "pi_dl.nc": pi_DL_numpy.astype(np.float32),
         "vpg_dl.nc": vpg_DL_numpy.astype(np.float32),
         "duration": elapsed_str,
@@ -246,7 +248,8 @@ if __name__ == '__main__':
     file_paths = {
         "p": source_input_dir / "p.nc",
         "w": source_input_dir / "w.nc",
-        "initial": source_input_dir / default_fname
+        "initial": source_input_dir / default_fname,
+        "netE": source_input_dir / "netE.nc"
     }
     #Check that files exist
     for name, path in file_paths.items():
@@ -255,19 +258,27 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["p"], decode_times=False, engine="netcdf4") as ds_meta:
-        num_times = int(ds_meta.time.size)
+    with xr.open_dataset(file_paths["p"], decode_times=False, engine="netcdf4") as ds_meta, \
+        xr.open_dataset(file_paths["netE"], decode_times=False, engine="netcdf4").netE_flux_y_shell as ds_ex_e:
         nz, ny, nx = ds_meta.p.shape[1:]
-        
-        #Switch slicing depending on source of data
-        if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(82, num_times, 2)] #all odds except index 1
-            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
-        else:
-            active_timesteps = list(range(num_times))
 
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        all_time_vals = ds_ex_e.time.values
+
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
 
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
@@ -348,14 +359,14 @@ if __name__ == '__main__':
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         pool_tasks = [
-            (new_idx, t_original, worker_config) 
-            for new_idx, t_original in enumerate(active_timesteps)
+            (t_idx, t_val, worker_config) 
+            for t_idx, t_val in enumerate(target_times)
         ]
 
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_val, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Physical Time: {t_val:.1f}) finished in ({payload['duration']}). Committing to files...")
                 
                 for filename, data_array in payload.items():
                     if filename == "duration":

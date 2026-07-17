@@ -36,7 +36,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new, t, cfg = args
+    t_idx, t_val, cfg = args
 
     paths = cfg["paths"]
     dx, dy = cfg["dx"], cfg["dy"]
@@ -54,13 +54,13 @@ def process_timestep_worker(args):
 
         z_coords = ds_cloud_mask.z.values
 
-        cloud_mask_slice = ds_cloud_mask.cloud_mask.isel(time=t_new).compute()
-        w_slice = ds_w.w.isel(time=t).rename({'zh':'z'}).interp(z=z_coords).compute()
-        vpg_slice = ds_vpg.vpg.isel(time=t_new).compute()
-        b_slice = ds_b.b.isel(time=t_new).compute()
-        vpg_b_slice = ds_vpg_b.vpg_b.isel(time=t_new).compute()
-        vpg_dn_slice = ds_vpg_dn.vpg_dn.isel(time=t_new).compute()
-        vpg_dl_slice = ds_vpg_dl.vpg_dl.isel(time=t_new).compute()
+        cloud_mask_slice = ds_cloud_mask.cloud_mask.sel(time=t_val).compute()
+        w_slice = ds_w.w.sel(time=t_val).rename({'zh':'z'}).interp(z=z_coords).compute()
+        vpg_slice = ds_vpg.vpg.sel(time=t_val).compute()
+        b_slice = ds_b.b.sel(time=t_val).compute()
+        vpg_b_slice = ds_vpg_b.vpg_b.sel(time=t_val).compute()
+        vpg_dn_slice = ds_vpg_dn.vpg_dn.sel(time=t_val).compute()
+        vpg_dl_slice = ds_vpg_dl.vpg_dl.sel(time=t_val).compute()
         b_eff_slice = vpg_b_slice + b_slice
 
     has_nonzero_per_layer = (cloud_mask_slice > 0).any(dim=["x", "y"])
@@ -71,7 +71,7 @@ def process_timestep_worker(args):
 
     if cloud_z_coords.size > 0:
         # Get the mathematical minimum Z value (safeguards against backwards arrays)
-        arb_z = cloud_z_coords.min().compute().item()
+        arb_z = float(cloud_z_coords.values.min())
         zi_msg= f"zi (Cloud Base) = {arb_z}"
     else:
         arb_z = 2000 #fallback value of 2km
@@ -90,10 +90,10 @@ def process_timestep_worker(args):
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, {
+    return t_idx, t_val, {
         "duration": elapsed_str,
         "zi_msg": zi_msg,
-        "ke_w.nc": ke_w.values,
+        "ke_w.nc": ke_w.transpose("z", "y", "x").values,
         "ke_vpg.nc": ke_vpg.values,
         "ke_b.nc": ke_b.values,
         "ke_vpg_b.nc": ke_vpg_b.values,
@@ -204,18 +204,25 @@ if __name__ == '__main__':
 
     # Global structure
     with xr.open_dataset(file_paths["cloud_mask"], decode_times=False, engine="netcdf4") as ds_meta:
-        num_times = int(ds_meta.time.size)
         nz, ny, nx = ds_meta.cloud_mask.shape[1:]
-        
-        #Switch slicing depending on source of data
-        if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(82, num_times, 2)] #all evens
-            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
-        else:
-            active_timesteps = list(range(num_times))
 
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        all_time_vals = ds_meta.time.values
+
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
 
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
@@ -254,13 +261,13 @@ if __name__ == '__main__':
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         pool_tasks = [
-            (new_idx, t_original, worker_config) 
-            for new_idx, t_original in enumerate(active_timesteps)
+            (t_idx, t_val, worker_config) 
+            for t_idx, t_val in enumerate(target_times)
         ]
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_val, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Physical Time: {t_val:.1f}) finished in ({payload['duration']}). Committing to files...")
                 print(f" -> {payload['zi_msg']}")
                 
                 for filename, data_array in payload.items():

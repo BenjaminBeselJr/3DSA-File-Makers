@@ -66,7 +66,9 @@ def process_timestep_worker(args):
     """
 
     start_time = time.time()
-    t_new, t, cfg, global_coord_values = args
+    t_idx, t_val, global_coord_values = args
+
+    z_target = global_coord_values["z_grid"]
 
     # Storage structure: profiles[coord_type][var_key][m_key]
     timestep_profiles = {"geom_z": {v: {} for v in PHYSICAL_VARS}}
@@ -74,12 +76,12 @@ def process_timestep_worker(args):
         timestep_profiles[c_type] = {v: {} for v in PHYSICAL_VARS}
 
     # 1. Access masks via persistent global datasets
-    m_shell = worker_datasets["shell_mask"].shell_mask.isel(time=t).values.astype(bool)
-    m_shallow = worker_datasets["shallow_mask"].shallow_mask.isel(time=t).values.astype(bool)
-    m_congestus = worker_datasets["congestus_mask"].congestus_mask.isel(time=t).values.astype(bool)
-    m_deep = worker_datasets["deep_mask"].deep_mask.isel(time=t).values.astype(bool)
-    m_free = worker_datasets["free_shell_mask"].shell_mask.isel(time=t).values.astype(bool)
-    m_cloud = worker_datasets["cloud_mask"].cloud_mask.isel(time=t).values.astype(bool)
+    m_shell = worker_datasets["shell_mask"].shell_mask.sel(time=t_val).values.astype(bool)
+    m_shallow = worker_datasets["shallow_mask"].shallow_mask.sel(time=t_val).values.astype(bool)
+    m_congestus = worker_datasets["congestus_mask"].congestus_mask.sel(time=t_val).values.astype(bool)
+    m_deep = worker_datasets["deep_mask"].deep_mask.sel(time=t_val).values.astype(bool)
+    m_free = worker_datasets["free_shell_mask"].shell_mask.sel(time=t_val).values.astype(bool)
+    m_cloud = worker_datasets["cloud_mask"].cloud_mask.sel(time=t_val).values.astype(bool)
 
     masks = {
         "domain": None,
@@ -98,29 +100,28 @@ def process_timestep_worker(args):
     # This ensures we don't repeatedly open distance files inside the loop either
     distance_volumes = {}
     for c_type, file_key in DISTANCE_COORDS.items():
-        distance_volumes[c_type] = worker_datasets[file_key][file_key].isel(time=t_new).values
+        distance_volumes[c_type] = worker_datasets[file_key][file_key].sel(time=t_val).values
 
     # 3. Compute
     for var_key in PHYSICAL_VARS:
         if var_key == "b_eff":
-            v_matrix = worker_datasets["b"]["b"].isel(time=t_new).values + \
-                           worker_datasets["vpg_b"]["vpg_b"].isel(time=t_new).values
+            v_matrix = worker_datasets["b"]["b"].sel(time=t_val).values + \
+                           worker_datasets["vpg_b"]["vpg_b"].sel(time=t_val).values
         elif var_key == "qv":
-            v_matrix = worker_datasets["qt"]["qt"].isel(time=t).values - \
-                           worker_datasets["ql"]["ql"].isel(time=t).values
-        elif var_key in ["w", "ql", "qt", "thl"]: # from source instead of computed
-            v_matrix = worker_datasets[var_key][var_key].isel(time=t).values
+            v_matrix = worker_datasets["qt"]["qt"].sel(time=t_val).values - \
+                           worker_datasets["ql"]["ql"].sel(time=t_val).values
+        elif var_key in ["w"]: # from source instead of computed
+            w_slice = worker_datasets[var_key][var_key].sel(time=t_val)
+            v_matrix = w_slice.rename({'zh': 'z'}).interp(z=z_target).values # interpolate zh to z
         else:
-            v_matrix = worker_datasets[var_key][var_key].isel(time=t_new).values
+            v_matrix = worker_datasets[var_key][var_key].sel(time=t_val).values
 
         # --- Sub-step A: Geometric Z Profiles ---
         for m_key, mask_matrix in masks.items():
             if m_key == "domain":
                 timestep_profiles["geom_z"][var_key][m_key] = np.nanmean(v_matrix, axis=(1, 2)).astype(np.float32)
             else:
-                # Use faster boolean masking for the mean instead of allocating a whole new np.where array
-                masked_volume = np.where(mask_matrix, v_matrix, np.nan)
-                timestep_profiles["geom_z"][var_key][m_key] = np.nanmean(masked_volume, axis=(1, 2)).astype(np.float32)
+                timestep_profiles["geom_z"][var_key][m_key] = np.nanmean(v_matrix, axis=(1, 2), where=mask_matrix).astype(np.float32)
 
         valid_data_mask = ~np.isnan(v_matrix)
         v_matrix_clean = np.where(valid_data_mask, v_matrix, 0.0)
@@ -136,6 +137,10 @@ def process_timestep_worker(args):
 
                 flat_dist = dist_volume[base_valid]
                 flat_vals = v_matrix_clean[base_valid]
+                # filter out nans
+                valid_dist_mask = ~np.isnan(flat_dist)
+                flat_dist = flat_dist[valid_dist_mask]
+                flat_vals = flat_vals[valid_dist_mask]
 
                 dist_profile = np.full(num_vals, np.nan, dtype=np.float32)
                 
@@ -178,7 +183,7 @@ def process_timestep_worker(args):
     gc.collect()
 
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, timestep_profiles, elapsed_str
+    return t_idx, t_val, timestep_profiles, elapsed_str
 
 # --- Main Thread ---
 if __name__ == '__main__':
@@ -254,21 +259,36 @@ if __name__ == '__main__':
 
     # Gather coordinate metadata
     with xr.open_dataset(file_registry["shell_mask"], decode_times=False) as ds_meta:
-        num_times = int(ds_meta.time.size)
         nz = ds_meta.shell_mask.shape[1]
-        active_timesteps = [t for t in range(82, num_times, 2)] if source_key in ["SEUS", "RICO"] else list(range(num_times))
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        all_time_vals = ds_meta.time.values
+        
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
+
         z_vals = ds_meta.z.values
 
     # ─── CALCULATE GLOBAL DISTANCE RANGES FOR DIMENSIONS ───────────────────
     print("Scanning data to determine exact spatial coordinate ranges...")
     global_coord_values = {}
+    global_coord_values["z_grid"] = z_vals
     
     for c_type, file_key in DISTANCE_COORDS.items():
         with xr.open_dataset(file_registry[file_key], decode_times=False) as ds_dist:
             # Load the unique values across all relevant active timesteps
-            subset = ds_dist[file_key].isel(time=active_timesteps).values
+            subset = ds_dist[file_key].sel(time=time_vals).values
             
             if "norm_" in c_type:
                 # Strategy A: Fractional binning from absolute min to max in 0.01 increments
@@ -333,12 +353,12 @@ if __name__ == '__main__':
         worker_config = {k: str(v) for k, v in file_registry.items()}
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         pool_tasks = [
-            (new_idx, t_original, worker_config, global_coord_values) 
-            for new_idx, t_original in enumerate(active_timesteps)
+            (t_idx, t_val, global_coord_values) 
+            for t_idx, t_val in enumerate(target_times)
         ]
 
         with multiprocessing.Pool(processes=num_cores, initializer=init_worker_process, initargs=(worker_config,)) as pool:
-            for t_idx, t_original, complex_profiles, duration in pool.imap_unordered(process_timestep_worker, pool_tasks):
+            for t_idx, t_val, complex_profiles, duration in pool.imap_unordered(process_timestep_worker, pool_tasks):
                 print(f"Timestep {t_idx}/{num_output_times - 1} finished in ({duration}). Committing data...")
                 
                 for c_type, phys_dict in complex_profiles.items():

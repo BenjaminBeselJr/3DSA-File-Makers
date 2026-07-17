@@ -113,7 +113,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new, t, cfg = args
+    t_idx, t_val, cfg = args
 
     paths = cfg["paths"]
     dx, dy = cfg["dx"], cfg["dy"]
@@ -128,35 +128,33 @@ def process_timestep_worker(args):
          xr.open_dataset(paths["thl"], decode_times=False, engine="netcdf4") as ds_thl, \
          xr.open_dataset(paths["p"], decode_times=False, engine="netcdf4") as ds_p:
          
-        p_slice = ds_p.p.isel(time=t)
-        ql_slice = ds_ql.ql.isel(time=t)
-        qt_slice = ds_qt.qt.isel(time=t)
-        thl_slice = ds_thl.thl.isel(time=t)
+        p_slice = ds_p.p.sel(time=t_val)
         z_coords = ds_p.z.values
+        
+        p_val = p_slice.values
+        ql_val = ds_ql.ql.sel(time=t_val).values
+        qt_val = ds_qt.qt.sel(time=t_val).values
+        thl_val = ds_thl.thl.sel(time=t_val).values
 
-    rho_da = xr.DataArray(rho_profile, coords={'z': z_coords}, dims=['z'])
-    init_th_da = xr.DataArray(init_th_profile, coords={'z': z_coords}, dims=['z'])
 
     # --- Calculate B ---
-    p_val = p_slice.values
     big_pi = (p_val / p_0) ** CHI
-    ds_thv = (thl_slice.values + (L_v / (c_pd * big_pi)) * ql_slice.values) * (1 - (1 - (R_v / R_d)) - ((R_v / R_d) * qt_slice.values))
-    thv_mean = ds_thv.mean(axis=(1, 2), keepdims=True)
-    b_val = (9.81 / 300) * (ds_thv - thv_mean)
-
-    b_slice = xr.DataArray(b_val, coords=p_slice.coords, dims=p_slice.dims)
+    thv_val = (thl_val + (L_v / (c_pd * big_pi)) * ql_val) * (1.0 - (1.0 - (R_v / R_d)) - ((R_v / R_d) * qt_val))
+    thv_mean = thv_val.mean(axis=(1, 2), keepdims=True)
+    b_val = (9.81 / 300.0) * (thv_val - thv_mean)
 
     #--Calculate VPG--
-    vpg_slice = p_slice.differentiate(coord='z')
+    vpg_val = np.gradient(p_val, z_coords, axis=0)
 
     #--Calculate pi b--
     #Obtaining sigma (part of the left hand side)
     sigma_numpy = c_pd * init_th_profile.ravel() # Leakage protection: Flatten cleanly to 1D
 
     #Obtaining f' (right hand side)
-    f_field = rho_da * b_slice
-    df_dz = f_field.differentiate(coord='z')
-    f_numpy = np.nan_to_num(df_dz.values, nan=0.0) #clean f
+    rho_3d = rho_profile[:, np.newaxis, np.newaxis]
+    f_field = rho_3d * b_val
+    df_dz = np.gradient(f_field, z_coords, axis=0)
+    f_numpy = np.nan_to_num(df_dz, nan=0.0) #clean f
 
 
     #Performing Fourier analysis to find pi'_b
@@ -168,21 +166,19 @@ def process_timestep_worker(args):
         dy=dy
     )
 
-    pi_b_da = xr.DataArray(pi_b_numpy, coords=p_slice.coords, dims=p_slice.dims)
-
-    
     # -- Calculate VPG_b --
     #Equation: - cp * theta p, 0 * d(pi_b)/dz
-    dpi_dz_xr = pi_b_da.differentiate(coord="z")
-    vpg_b_slice = -c_pd * init_th_da * dpi_dz_xr
+    dpi_dz = np.gradient(pi_b_numpy, z_coords, axis=0)
+    init_th_3d = init_th_profile[:, np.newaxis, np.newaxis]
+    vpg_b_val = -c_pd * init_th_3d * dpi_dz
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, {
-        "b.nc": b_slice.values,
-        "vpg.nc": vpg_slice.values,
-        "pi_b.nc": pi_b_numpy,
-        "vpg_b.nc": vpg_b_slice.values,
+    return t_idx, t_val, {
+        "b.nc": b_val.astype(np.float32),
+        "vpg.nc": vpg_val.astype(np.float32),
+        "pi_b.nc": pi_b_numpy.astype(np.float32),
+        "vpg_b.nc": vpg_b_val.astype(np.float32),
         "duration": elapsed_str,
     }
 
@@ -250,7 +246,8 @@ if __name__ == '__main__':
         "qt": source_input_dir / "qt.nc",
         "thl": source_input_dir / "thl.nc",
         "p": source_input_dir / "p.nc",
-        "initial": source_input_dir / default_fname
+        "initial": source_input_dir / default_fname,
+        "netE": source_input_dir / "netE.nc"
     }
     #Check that files exist
     for name, path in file_paths.items():
@@ -259,19 +256,27 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta:
-        num_times = int(ds_meta.time.size)
+    with xr.open_dataset(file_paths["ql"], decode_times=False, engine="netcdf4") as ds_meta, \
+        xr.open_dataset(file_paths["netE"], decode_times=False, engine="netcdf4").netE_flux_y_shell as ds_ex_e:
         nz, ny, nx = ds_meta.ql.shape[1:]
 
-        #Switch slicing depending on source of data
-        if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(82, num_times, 2)] #all evens
-            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
-        else:
-            active_timesteps = list(range(num_times))
+        all_time_vals = ds_ex_e.time.values
 
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
 
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
@@ -340,13 +345,13 @@ if __name__ == '__main__':
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         pool_tasks = [
-            (new_idx, t_original, worker_config) 
-            for new_idx, t_original in enumerate(active_timesteps)
+            (t_idx, t_val, worker_config) 
+            for t_idx, t_val in enumerate(target_times)
         ]
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_val, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Physical Time: {t_val:.1f}) finished in ({payload['duration']}). Committing to files...")
                 
                 for filename, data_array in payload.items():
                     if filename == "duration":

@@ -111,7 +111,7 @@ def process_timestep_worker(args):
     and returns localized numpy matrices back to the orchestrator thread.
     """
     start_time = time.time()
-    t_new, t, cfg = args
+    t_idx, t_val, cfg = args
 
     paths = cfg["paths"]
     dx, dy = cfg["dx"], cfg["dy"]
@@ -124,35 +124,27 @@ def process_timestep_worker(args):
 
     x_target = cfg["x_vals"]
     y_target = cfg["y_vals"]
+    z_target = cfg["z_vals"]
 
+    open_kwargs = {
+        "decode_times": False, 
+        "chunks": None,          # Disable dask inside workers to keep memory footprint low
+        "engine": "netcdf4"
+    }
 
     #load datasets
-    with nc.Dataset(paths["u"], "r", parallel=False) as ds_u, \
-         nc.Dataset(paths["v"], "r", parallel=False) as ds_v:
+    with xr.open_dataset(paths["u"], **open_kwargs) as ds_u, \
+         xr.open_dataset(paths["v"], **open_kwargs) as ds_v:
          
-        u_raw = ds_u.variables["u"][t, :, :, :]  # Shape: (nz, ny, nx_staggered)
-        v_raw = ds_v.variables["v"][t, :, :, :]  # Shape: (nz, ny_staggered, nx)
-        
-        z_coords = ds_u.variables["z"][:]
-        y_coords = ds_u.variables["y"][:]    # (ny) - Cell centers for U coordinate
-        xh_coords = ds_u.variables["xh"][:]  # Staggered x-dimension for u
-        
-        yh_coords = ds_v.variables["yh"][:]  # Staggered y-dimension for v
-        x_coords = ds_v.variables["x"][:]    # (nx) - Cell centers for V coordinate
+        # 2. Select the specific time value directly using .sel()
+        # Because decode_times=False, t_val matches the raw float coordinate exactly.
+        u_slice = ds_u.u.sel(time=t_val).interp(xh=x_target).rename({"xh": "x"})
+        v_slice = ds_v.v.sel(time=t_val).interp(yh=y_target).rename({"yh": "y"})
 
-    u_slice = xr.DataArray(
-        u_raw, 
-        coords={"z": z_coords, "y": y_coords, "xh": xh_coords}, 
-        dims=["z", "y", "xh"]
-    ).interp(xh=x_target).rename({"xh": "x"}) # Rename to align with scalar 'x'
-    
-    v_slice = xr.DataArray(
-        v_raw, 
-        coords={"z": z_coords, "yh": yh_coords, "x": x_coords}, 
-        dims=["z", "yh", "x"]
-    ).interp(yh=y_target).rename({"yh": "y"}) # Rename to align with scalar 'y'
+    u_slice = u_slice.compute()
+    v_slice = v_slice.compute()
 
-    rho_da = xr.DataArray(rho_profile, coords={'z': z_coords}, dims=['z'])
+    rho_da = xr.DataArray(rho_profile, coords={'z': z_target}, dims=['z'])
 
     #--Calculate pi DN--
     #Obtaining sigma (part of the left hand side)
@@ -177,37 +169,36 @@ def process_timestep_worker(args):
 
     f_DN = -(div_x + div_y)
 
-    f_DN_numpy = f_DN.compute().values
+    f_DN_numpy = f_DN.values
     f_DN_numpy = np.nan_to_num(f_DN_numpy, nan=0.0) #clean f
 
     #dx, dy, z vals
     dx = float(x_target[1] - x_target[0])
     dy = float(y_target[1] - y_target[0])
-    z_numpy = u_slice.z.compute().values
 
     #Performing Fourier analysis to find pi'_b
     pi_DN_numpy = solve_generalized_poisson_3d(
         f=f_DN_numpy, 
         sigma=sigma_numpy, 
-        z_coords=z_numpy, 
+        z_coords=z_target, 
         dx=dx, 
         dy=dy
     )
 
     pi_DN_xr = xr.DataArray(
         pi_DN_numpy, 
-        coords={"z": z_numpy, "y": y_target, "x": x_target}, 
+        coords={"z": z_target, "y": y_target, "x": x_target}, 
         dims=["z", "y", "x"]
     )
 
     #VPG DN
-    dpi_dz_numpy = pi_DN_xr.differentiate(coord="z").compute().values
+    dpi_dz_numpy = pi_DN_xr.differentiate(coord="z").values
     vpg_DN_numpy = -c_pd * init_th_profile[:, np.newaxis, np.newaxis] * dpi_dz_numpy
 
 
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return t_new, t, {
+    return t_idx, t_val, {
         "pi_dn.nc": pi_DN_numpy.astype(np.float32),
         "vpg_dn.nc": vpg_DN_numpy.astype(np.float32),
         "duration": elapsed_str,
@@ -276,7 +267,8 @@ if __name__ == '__main__':
         "p": source_input_dir / "p.nc",
         "u": source_input_dir / "u.nc",
         "v": source_input_dir / "v.nc",
-        "initial": source_input_dir / default_fname
+        "initial": source_input_dir / default_fname,
+        "netE": source_input_dir / "netE.nc"
     }
     #Check that files exist
     for name, path in file_paths.items():
@@ -285,19 +277,27 @@ if __name__ == '__main__':
             sys.exit(1)
 
     # Global structure
-    with xr.open_dataset(file_paths["p"], decode_times=False, engine="netcdf4") as ds_meta:
-        num_times = int(ds_meta.time.size)
+    with xr.open_dataset(file_paths["p"], decode_times=False, engine="netcdf4") as ds_meta, \
+        xr.open_dataset(file_paths["netE"], decode_times=False, engine="netcdf4").netE_flux_y_shell as ds_ex_e:
         nz, ny, nx = ds_meta.p.shape[1:]
-        
-        #Switch slicing depending on source of data
-        if source_key in ["SEUS", "RICO"]:
-            active_timesteps = [t for t in range(82, num_times, 2)] #all odds except index 1
-            print(f"✂️ {source_key} Config: Filtering for odd timesteps skipping index 1.")
-        else:
-            active_timesteps = list(range(num_times))
 
-        time_vals = ds_meta.time.values[active_timesteps]
-        num_output_times = len(active_timesteps)
+        all_time_vals = ds_ex_e.time.values
+
+        start_time = 151200
+        step_delta = 7200
+
+        
+        target_times = [
+            float(t_val) for t_val in all_time_vals
+            if t_val >= start_time and (t_val - start_time) % step_delta == 0
+        ]
+
+        if not target_times:
+            print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)
+            sys.exit(1)
+
+        num_output_times = len(target_times)
+        time_vals = np.array(target_times)
 
         z_vals = ds_meta.z.values
         y_vals = ds_meta.y.values
@@ -364,6 +364,7 @@ if __name__ == '__main__':
             "dy": dy,
             "x_vals": x_vals,
             "y_vals": y_vals,
+            "z_vals": z_vals,
             "init_th_profile": init_th_profile,  # Raw 1D numpy array
             "rho_profile": rho_profile,           # Raw 1D numpy array
             "c_pd": c_pd,                          # Specific heat at constant pressure
@@ -373,14 +374,14 @@ if __name__ == '__main__':
 
         print(f"Spawning Pool with {num_cores} active workers over {num_output_times} timesteps...")
         pool_tasks = [
-            (new_idx, t_original, worker_config) 
-            for new_idx, t_original in enumerate(active_timesteps)
+            (t_idx, t_val, worker_config) 
+            for t_idx, t_val in enumerate(target_times)
         ]
 
 
         with multiprocessing.Pool(processes=num_cores) as pool:
-            for t_idx, t_original, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
-                print(f"Timestep {t_idx}/{num_output_times - 1} (Original index: {t_original}) finished in ({payload['duration']}). Committing to files...")
+            for t_idx, t_val, payload in pool.imap_unordered(process_timestep_worker, pool_tasks):
+                print(f"Timestep {t_idx}/{num_output_times - 1} (Physical Time: {t_val:.1f}) finished in ({payload['duration']}). Committing to files...")
                 
                 for filename, data_array in payload.items():
                     if filename == "duration":
