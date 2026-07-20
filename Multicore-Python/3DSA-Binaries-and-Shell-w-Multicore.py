@@ -145,7 +145,7 @@ def process_timestep_worker(args):
         "free_shell_mask.nc": local_free_shell_mask.astype(np.uint8),
         "shell_labels.nc": local_shell_labels,
         "cloud_labels.nc": local_cloud_labels.astype(np.uint32),
-        "combined_labels.nc": local_free_shell_labels,
+        "combined_labels.nc": local_combined_labels.astype(np.uint32),
         "duration": elapsed_str,
     }
 
@@ -224,7 +224,7 @@ if __name__ == '__main__':
         xr.open_dataset(file_paths["netE"], decode_times=False, engine="netcdf4").netE_flux_y_shell as ds_ex_e:
         nz, ny, nx = ds_meta.ql.shape[1:]
 
-        all_time_vals = ds_ex_e.time.values
+        all_time_vals = ds_ex_e.time.compute().values
 
         start_time = 154800
         step_delta = 7200
@@ -247,9 +247,9 @@ if __name__ == '__main__':
         num_output_times = len(target_times)
         time_vals = np.array(target_times)
 
-        z_vals = ds_meta.z.values
-        y_vals = ds_meta.y.values
-        x_vals = ds_meta.x.values
+        z_vals = ds_meta.z.compute().values
+        y_vals = ds_meta.y.compute().values
+        x_vals = ds_meta.x.compute().values
         dx = float(ds_meta.x[1] - ds_meta.x[0])
         dy = float(ds_meta.y[1] - ds_meta.y[0])
 

@@ -260,7 +260,7 @@ if __name__ == '__main__':
     # Gather coordinate metadata
     with xr.open_dataset(file_registry["shell_mask"], decode_times=False) as ds_meta:
         nz = ds_meta.shell_mask.shape[1]
-        all_time_vals = ds_meta.time.values
+        all_time_vals = ds_meta.time.compute().values
         
         start_time = 154800
         step_delta = 7200
@@ -278,7 +278,7 @@ if __name__ == '__main__':
         num_output_times = len(target_times)
         time_vals = np.array(target_times)
 
-        z_vals = ds_meta.z.values
+        z_vals = ds_meta.z.compute().values
 
     # ─── CALCULATE GLOBAL DISTANCE RANGES FOR DIMENSIONS ───────────────────
     print("Scanning data to determine exact spatial coordinate ranges...")

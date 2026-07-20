@@ -16,24 +16,30 @@ import argparse
 # GLOBAL CONFIGURATION & SHARED REGISTRY
 # =====================================================================
 EXPORT_REGISTRY = {
-    "slab_entrainment_stats.nc": ("entrainment", "f4"), # dimensions: t, z
+    "slab_entrainment_stats.nc": ("e", "f4"), # dimensions: t, z
+}
+
+BODY_GROUP_STRUCTURE = {
+    "Normal": {
+        "Cloud": ["Entrainment", "Detrainment"],
+        "Shell": ["Entrainment", "Detrainment"],
+    },
+    "Free_shell": {
+        "Shell": ["Entrainment", "Detrainment"],
+    },
+}
+
+SUB_GROUP_STRUCTURE = {
+    "Domain": BODY_GROUP_STRUCTURE["Normal"].copy(),
+    "Shallow": BODY_GROUP_STRUCTURE["Normal"].copy(),
+    "Congestus": BODY_GROUP_STRUCTURE["Normal"].copy(),
+    "Deep": BODY_GROUP_STRUCTURE["Normal"].copy(),
+    "Free_shell": BODY_GROUP_STRUCTURE["Free_shell"].copy()
 }
 
 GROUPS_STRUCTURE = {
-    "Average": {
-        "Domain": ["Cloud", "Shell"],
-        "Shallow": ["Cloud", "Shell"],
-        "Congestus": ["Cloud", "Shell"],
-        "Deep": ["Cloud", "Shell"],
-        "Free_shell": ["Shell"]
-    },
-    "Sum": {
-        "Domain": ["Cloud", "Shell"],
-        "Shallow": ["Cloud", "Shell"],
-        "Congestus": ["Cloud", "Shell"],
-        "Deep": ["Cloud", "Shell"],
-        "Free_shell": ["Shell"]
-    }
+    "Average": SUB_GROUP_STRUCTURE.copy(),
+    "Sum": SUB_GROUP_STRUCTURE.copy()
 }
 
 # --- Multiprocessing Worker Function ---
@@ -54,7 +60,9 @@ def process_timestep_worker(args):
          nc.Dataset(paths["deep_mask"], "r", parallel=False) as ds_deep, \
          nc.Dataset(paths["free_shell_mask"], "r", parallel=False) as ds_free, \
          nc.Dataset(paths["shell_entrainment"], "r", parallel=False) as ds_shell_ent, \
-         nc.Dataset(paths["cloud_entrainment"], "r", parallel=False) as ds_cloud_ent:
+         nc.Dataset(paths["cloud_entrainment"], "r", parallel=False) as ds_cloud_ent, \
+        nc.Dataset(paths["shell_detrainment"], "r", parallel=False) as ds_shell_det, \
+         nc.Dataset(paths["cloud_detrainment"], "r", parallel=False) as ds_cloud_det:
 
         cloud_labels = ds_cloud.variables["cloud_labels"][t_new, :, :, :]
         shell_labels = ds_shell.variables["shell_labels"][t_new, :, :, :]
@@ -67,8 +75,10 @@ def process_timestep_worker(args):
             "Free_shell": ds_free.variables["shell_mask"][t_new, :, :, :] > 0
         }
 
-        shell_entrainment = ds_shell_ent.variables["entrainment"][t_new, :, :, :]
-        cloud_entrainment = ds_cloud_ent.variables["entrainment"][t_new, :, :, :]
+        shell_entrainment = ds_shell_ent.variables["shell_label_entrainment"][t_new, :, :, :]
+        cloud_entrainment = ds_cloud_ent.variables["cloud_label_entrainment"][t_new, :, :, :]
+        shell_detrainment = ds_shell_det.variables["shell_label_detrainment"][t_new, :, :, :]
+        cloud_detrainment = ds_cloud_det.variables["cloud_label_detrainment"][t_new, :, :, :]
 
     nz, ny, nx = cloud_labels.shape
 
@@ -87,10 +97,12 @@ def process_timestep_worker(args):
     results = {}
     for top in GROUPS_STRUCTURE.keys():
         results[top] = {}
-        for mid, bottoms in GROUPS_STRUCTURE[top].items():
+        for mid, bodies in GROUPS_STRUCTURE[top].items():
             results[top][mid] = {}
-            for bot in bottoms:
-                results[top][mid][bot] = np.zeros(nz, dtype=np.float32)
+            for body, e_types in GROUPS_STRUCTURE[top][mid].items():
+                results[top][mid][body] = {}
+                for e_type in e_types:
+                    results[top][mid][body][e_type] = np.zeros(nz, dtype=np.float32)
 
     # =====================================================================
     # 1. PROCESS SHELL LABELS (O(N_labels) complexity)
@@ -115,6 +127,7 @@ def process_timestep_worker(args):
         active_mask = z_distribution > 0
 
         entrainment_profile = np.zeros(nz, dtype=np.float32)
+        detrainment_profile = np.zeros(nz, dtype=np.float32)
 
         if np.any(active_mask):
             # Perform argmax ONLY on levels where the label is physically present
@@ -125,12 +138,15 @@ def process_timestep_worker(args):
 
             # Assign values only to the active z levels
             entrainment_profile[active_mask] = shell_entrainment[active_z, y_indices, x_indices]
+            detrainment_profile[active_mask] = shell_detrainment[active_z, y_indices, x_indices]
 
         
-        sum_contribution = entrainment_profile * z_distribution
+        sum_e_contribution = entrainment_profile * z_distribution
+        sum_de_contribution = detrainment_profile * z_distribution
 
         for cat_name in intersecting_categories:
-            results["Sum"][cat_name]["Shell"] += sum_contribution
+            results["Sum"][cat_name]["Shell"]["Entrainment"] += sum_e_contribution
+            results["Sum"][cat_name]["Shell"]["Detrainment"] += sum_de_contribution
             counts[cat_name]["Shell"] += z_distribution
 
     # =====================================================================
@@ -157,6 +173,7 @@ def process_timestep_worker(args):
         active_mask = z_distribution > 0
 
         entrainment_profile = np.zeros(nz, dtype=np.float32)
+        detrainment_profile = np.zeros(nz, dtype=np.float32)
 
         if np.any(active_mask):
             active_z = z_indices[active_mask]
@@ -165,20 +182,34 @@ def process_timestep_worker(args):
             x_indices = flat_idx % nx
 
             entrainment_profile[active_mask] = cloud_entrainment[active_z, y_indices, x_indices]
+            detrainment_profile[active_mask] = cloud_detrainment[active_z, y_indices, x_indices]
         
-        sum_contribution = entrainment_profile * z_distribution
+        sum_e_contribution = entrainment_profile * z_distribution
+        sum_d_contribution = detrainment_profile * z_distribution
 
         for cat_name in intersecting_categories:
-            results["Sum"][cat_name]["Cloud"] += sum_contribution
+            results["Sum"][cat_name]["Cloud"]["Entrainment"] += sum_e_contribution
+            results["Sum"][cat_name]["Cloud"]["Detrainment"] += sum_d_contribution
             counts[cat_name]["Cloud"] += z_distribution
 
     # =====================================================================
     # 3. COMPUTE AVERAGES
     # =====================================================================
     for cat_name, sub_dict in counts.items():
-        for bot_name, voxel_counts in sub_dict.items():
-            total_sum = results["Sum"][cat_name][bot_name]
-            results["Average"][cat_name][bot_name] = np.divide(
+        for body_name, voxel_counts in sub_dict.items():
+
+            #Entrainment
+            total_sum = results["Sum"][cat_name][body_name]["Entrainment"]
+            results["Average"][cat_name][body_name]["Entrainment"] = np.divide(
+                total_sum, 
+                voxel_counts, 
+                out=np.zeros_like(total_sum), 
+                where=voxel_counts > 0
+            )
+
+            #Detrainment
+            total_sum = results["Sum"][cat_name][body_name]["Detrainment"]
+            results["Average"][cat_name][body_name]["Detrainment"] = np.divide(
                 total_sum, 
                 voxel_counts, 
                 out=np.zeros_like(total_sum), 
@@ -257,6 +288,8 @@ if __name__ == '__main__':
         "shell_labels": output_dir / "shell_labels.nc",
         "shell_entrainment": output_dir / "slab_shell_label_entrainment.nc",
         "cloud_entrainment": output_dir / "slab_cloud_label_entrainment.nc",
+        "shell_detrainment": output_dir / "slab_shell_label_detrainment.nc",
+        "cloud_detrainment": output_dir / "slab_cloud_label_detrainment.nc",
     }
 
     #Check that files exist
@@ -294,16 +327,17 @@ if __name__ == '__main__':
             
             for top_grp_name, mid_structure in GROUPS_STRUCTURE.items():
                 top_grp = f.createGroup(top_grp_name)
-                for mid_grp_name, bottom_list in mid_structure.items():
+                for mid_grp_name, body_list in mid_structure.items():
                     mid_grp = top_grp.createGroup(mid_grp_name)
-                    for bot_grp_name in bottom_list:
-                        bot_grp = mid_grp.createGroup(bot_grp_name)
-                        
-                        # Create variable inside the leaf group: group/subgroup/subgroup/entrainment
-                        bot_grp.createVariable(
-                            var_name, data_type, ("time", "z"), 
-                            zlib=True, complevel=4, chunksizes=(1, nz)
-                        )
+                    for body_grp_name, e_type_list in body_list.items():
+                        body_grp = mid_grp.createGroup(body_grp_name)
+                        for e_type_name in e_type_list:
+                            e_type_grp = body_grp.createGroup(e_type_name)
+                            # Create variable inside the leaf group: group/subgroup/body/e_type/entrainment
+                            e_type_grp.createVariable(
+                                var_name, data_type, ("time", "z"), 
+                                zlib=True, complevel=4, chunksizes=(1, nz)
+                            )
 
 
         # --- Start Worker Pool ---
@@ -318,22 +352,27 @@ if __name__ == '__main__':
             for new_idx, t_original in enumerate(active_timesteps):
                 yield (new_idx, t_original, worker_config)
 
+        
+
         with multiprocessing.Pool(processes=num_cores) as pool:
             for t_new, t_original, payload in pool.imap_unordered(process_timestep_worker, task_generator()):
                 print(f"Timestep {t_new}/{num_output_times - 1} finished in ({payload['duration']}). Committing...")
                 
                 f_stats = open_files["slab_entrainment_stats.nc"]
                 stats_data = payload["slab_entrainment_stats.nc"]
+
+                target_var_name = EXPORT_REGISTRY["slab_entrainment_stats.nc"][0]
                 
                 for top_grp_name, mid_structure in GROUPS_STRUCTURE.items():
-                    for mid_grp_name, bottom_list in mid_structure.items():
-                        for bot_grp_name in bottom_list:
-                            profile_slice = stats_data[top_grp_name][mid_grp_name][bot_grp_name]
-                            
-                            # Standardized group path navigation
-                            grp_path = f"/{top_grp_name}/{mid_grp_name}/{bot_grp_name}"
-                            grp_var = f_stats[grp_path].variables["entrainment"]
-                            grp_var[t_new, :] = profile_slice
+                    for mid_grp_name, body_structure in mid_structure.items():
+                        for body_grp_name, e_type_list in body_structure.items():
+                            for e_type_name in e_type_list:
+                                profile_slice = stats_data[top_grp_name][mid_grp_name][body_grp_name][e_type_name]
+                                
+                                # Standardized group path navigation
+                                grp_path = f"/{top_grp_name}/{mid_grp_name}/{body_grp_name}/{e_type_name}"
+                                grp_var = f_stats[grp_path].variables[target_var_name]
+                                grp_var[t_new, :] = profile_slice
                             
                 f_stats.sync()
                 gc.collect()

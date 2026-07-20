@@ -305,10 +305,10 @@ if __name__ == '__main__':
     with xr.open_dataset(file_paths["shell_labels"], decode_times=False, engine="netcdf4") as ds_meta:
         num_times = int(ds_meta.time.size)
         nz, ny, nx = ds_meta.shell_labels.shape[1:]
-        time_vals = ds_meta.time.values
-        z_vals = ds_meta.z.values
-        y_vals = ds_meta.y.values
-        x_vals = ds_meta.x.values
+        time_vals = ds_meta.time.compute().values
+        z_vals = ds_meta.z.compute().values
+        y_vals = ds_meta.y.compute().values
+        x_vals = ds_meta.x.compute().values
         dx = float(ds_meta.x[1] - ds_meta.x[0])
         dy = float(ds_meta.y[1] - ds_meta.y[0])
 

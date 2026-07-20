@@ -182,12 +182,12 @@ if __name__ == '__main__':
         
         active_timesteps = list(range(num_times))
 
-        time_vals = ds_meta.time.values[active_timesteps]
+        time_vals = ds_meta.time.compute().values[active_timesteps]
         num_output_times = len(active_timesteps)
 
-        z_vals = ds_meta.z.values
-        y_vals = ds_meta.y.values
-        x_vals = ds_meta.x.values
+        z_vals = ds_meta.z.compute().values
+        y_vals = ds_meta.y.compute().values
+        x_vals = ds_meta.x.compute().values
 
     # --- Preallocate NetCDF file structures ---
     open_files = {}

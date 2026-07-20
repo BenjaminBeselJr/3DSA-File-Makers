@@ -18,8 +18,12 @@ import argparse
 EXPORT_REGISTRY = {
     "slab_shell_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z
     "slab_shell_label_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
+    "slab_shell_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z
+    "slab_shell_label_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
     "slab_cloud_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z
     "slab_cloud_label_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
+    "slab_cloud_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z
+    "slab_cloud_label_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
     
 }
 
@@ -68,6 +72,12 @@ def process_timestep_worker(task):
 
     # pre-allocate sets
     nz, ny, nx = cloud_labels.shape
+
+    out_shell_label_det = np.zeros((nz, ny, nx), dtype=np.float32)
+    out_cloud_label_det = np.zeros((nz, ny, nx), dtype=np.float32)
+    total_shell_det_profile = np.zeros(nz, dtype=np.float32)
+    total_cloud_det_profile = np.zeros(nz, dtype=np.float32)
+    
     out_shell_label_ent = np.zeros((nz, ny, nx), dtype=np.float32)
     out_cloud_label_ent = np.zeros((nz, ny, nx), dtype=np.float32)
     total_shell_ent_profile = np.zeros(nz, dtype=np.float32)
@@ -79,13 +89,30 @@ def process_timestep_worker(task):
             sliced = ds_e[var_name].sel(time=t_val)
             return xr.where(abs(sliced) < max_ent_mag, sliced, np.nan).values
 
-        cloud_e_x = load_and_filter("netE_flux_x_ql")
-        cloud_e_y = load_and_filter("netE_flux_y_ql")
-        cloud_e_z = load_and_filter("netE_flux_z_ql")
+        cloud_ne_x = load_and_filter("netE_flux_x_ql")
+        cloud_ne_y = load_and_filter("netE_flux_y_ql")
+        cloud_ne_z = load_and_filter("netE_flux_z_ql")
 
-        shell_e_x = load_and_filter("netE_flux_x_shell")
-        shell_e_y = load_and_filter("netE_flux_y_shell")
-        shell_e_z = load_and_filter("netE_flux_z_shell")
+        shell_ne_x = load_and_filter("netE_flux_x_shell")
+        shell_ne_y = load_and_filter("netE_flux_y_shell")
+        shell_ne_z = load_and_filter("netE_flux_z_shell")
+
+    # Separate entrainment and detrainment
+    cloud_e_x_mask = cloud_ne_x > 0
+    cloud_e_y_mask = cloud_ne_y > 0
+    cloud_e_z_mask = cloud_ne_z > 0
+
+    cloud_d_x_mask = cloud_ne_x < 0
+    cloud_d_y_mask = cloud_ne_y < 0
+    cloud_d_z_mask = cloud_ne_z < 0
+
+    shell_e_x_mask = shell_ne_x > 0
+    shell_e_y_mask = shell_ne_y > 0
+    shell_e_z_mask = shell_ne_z > 0
+
+    shell_d_x_mask = shell_ne_x < 0
+    shell_d_y_mask = shell_ne_y < 0
+    shell_d_z_mask = shell_ne_z < 0
 
     # ----------------------------------------------------------------------
     # Step 1 - Shell Entrainment (Accumulates Shell Fluxes near Cloud Edges)
@@ -120,8 +147,10 @@ def process_timestep_worker(task):
         e_z_mask[0, :, :] = dilated_clouds[0, :, :] # prevent rolling along boundary
 
         # sum x and y
-        sum_x = np.nansum(shell_e_x * e_x_mask, axis=(1, 2))
-        sum_y = np.nansum(shell_e_y * e_y_mask, axis=(1, 2))
+        sum_e_x = np.nansum(shell_ne_x * shell_e_x_mask * e_x_mask, axis=(1, 2))
+        sum_e_y = np.nansum(shell_ne_y * shell_e_y_mask * e_y_mask, axis=(1, 2))
+        sum_d_x = np.nansum(shell_ne_x * shell_d_x_mask * e_x_mask, axis=(1, 2))
+        sum_d_y = np.nansum(shell_ne_y * shell_d_y_mask * e_y_mask, axis=(1, 2))
 
         shell_target = (shell_labels == label_i)
         shell_above = shell_target
@@ -132,19 +161,29 @@ def process_timestep_worker(task):
         case2_mask = e_z_mask & shell_below & ~shell_above # case 2: shell below but not above
 
         # sum z
-        sum_z_case1 = np.nansum(shell_e_z * case1_mask, axis=(1, 2))
-        sum_z_case2 = np.nansum(shell_e_z * case2_mask, axis=(1, 2))
+        sum_e_z_case1 = np.nansum(shell_ne_z * shell_e_z_mask * case1_mask, axis=(1, 2))
+        sum_e_z_case2 = np.nansum(shell_ne_z * shell_e_z_mask * case2_mask, axis=(1, 2))
+        sum_d_z_case1 = np.nansum(shell_ne_z * shell_d_z_mask * case1_mask, axis=(1, 2))
+        sum_d_z_case2 = np.nansum(shell_ne_z * shell_d_z_mask * case2_mask, axis=(1, 2))
 
-        sum_z = np.zeros(nz, dtype=np.float32)
-        sum_z += sum_z_case1
-        sum_z[:-1] += sum_z_case2[1:]  # Shift map back down safely
+        sum_e_z = np.zeros(nz, dtype=np.float32)
+        sum_d_z = np.zeros(nz, dtype=np.float32)
+
+        sum_e_z += sum_e_z_case1
+        sum_e_z[:-1] += sum_e_z_case2[1:]  # Shift map back down safely
+        sum_d_z += sum_d_z_case1
+        sum_d_z[:-1] += sum_d_z_case2[1:]  # Shift map back down safely
 
         # apply sums
-        sum_total = (sum_x + sum_y + sum_z)
-        broadcasted_sum = sum_total[:, np.newaxis, np.newaxis]
+        sum_e_total = (sum_e_x + sum_e_y + sum_e_z)
+        sum_d_total = (sum_d_x + sum_d_y + sum_d_z)
+        broadcasted_sum_e = sum_e_total[:, np.newaxis, np.newaxis]
+        broadcasted_sum_d = sum_d_total[:, np.newaxis, np.newaxis]
 
-        out_shell_label_ent += broadcasted_sum * label_mask
-        total_shell_ent_profile += sum_total
+        out_shell_label_ent += broadcasted_sum_e * label_mask
+        out_shell_label_det += broadcasted_sum_d * label_mask
+        total_shell_ent_profile += sum_e_total
+        total_shell_det_profile += sum_d_total
         
 
     # ----------------------------------------------------------------------
@@ -176,8 +215,10 @@ def process_timestep_worker(task):
         e_z_mask[0, :, :] = dilated_shell[0, :, :] # prevent rolling along boundary
 
         # sum x,y
-        sum_x = np.nansum(cloud_e_x * e_x_mask, axis=(1, 2))
-        sum_y = np.nansum(cloud_e_y * e_y_mask, axis=(1, 2))
+        sum_e_x = np.nansum(cloud_ne_x * cloud_e_x_mask * e_x_mask, axis=(1, 2))
+        sum_e_y = np.nansum(cloud_ne_y * cloud_e_y_mask * e_y_mask, axis=(1, 2))
+        sum_d_x = np.nansum(cloud_ne_x * cloud_d_x_mask * e_x_mask, axis=(1, 2))
+        sum_d_y = np.nansum(cloud_ne_y * cloud_d_y_mask * e_y_mask, axis=(1, 2))
 
         cloud_above = cloud_target
         cloud_below = np.zeros_like(cloud_target)
@@ -186,27 +227,47 @@ def process_timestep_worker(task):
         case1_mask = e_z_mask & cloud_above & ~cloud_below # case 1: shell above but not below
         case2_mask = e_z_mask & cloud_below & ~cloud_above # case 2: shell below but not above
 
-        sum_z_case1 = np.nansum(cloud_e_z * case1_mask, axis=(1, 2))
-        sum_z_case2 = np.nansum(cloud_e_z * case2_mask, axis=(1, 2))
+        sum_e_z_case1 = np.nansum(cloud_ne_z * cloud_e_z_mask * case1_mask, axis=(1, 2))
+        sum_e_z_case2 = np.nansum(cloud_ne_z * cloud_e_z_mask * case2_mask, axis=(1, 2))
+        sum_d_z_case1 = np.nansum(cloud_ne_z * cloud_d_z_mask * case1_mask, axis=(1, 2))
+        sum_d_z_case2 = np.nansum(cloud_ne_z * cloud_d_z_mask * case2_mask, axis=(1, 2))
 
-        sum_z = np.zeros(nz, dtype=np.float32)
-        sum_z += sum_z_case1
-        sum_z[:-1] += sum_z_case2[1:]
+        sum_e_z = np.zeros(nz, dtype=np.float32)
+        sum_d_z = np.zeros(nz, dtype=np.float32)
 
-        sum_total = (sum_x + sum_y + sum_z)
-        broadcasted_sum = sum_total[:, np.newaxis, np.newaxis]
+        sum_e_z += sum_e_z_case1
+        sum_e_z[:-1] += sum_e_z_case2[1:]
+        sum_d_z += sum_d_z_case1
+        sum_d_z[:-1] += sum_d_z_case2[1:]
 
-        out_cloud_label_ent += broadcasted_sum * cloud_target
-        total_cloud_ent_profile += sum_total
+        sum_e_total = (sum_e_x + sum_e_y + sum_e_z)
+        sum_d_total = (sum_d_x + sum_d_y + sum_d_z)
+
+        broadcasted_sum_e = sum_e_total[:, np.newaxis, np.newaxis]
+        broadcasted_sum_d = sum_d_total[:, np.newaxis, np.newaxis]
+
+        out_cloud_label_ent += broadcasted_sum_e * cloud_target
+        total_cloud_ent_profile += sum_e_total
+
+        out_cloud_label_det += broadcasted_sum_d * cloud_target
+        total_cloud_det_profile += sum_d_total
 
             
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
     return t_idx, t_val, {
+        # Entrainment
         "slab_shell_entrainment.nc": total_shell_ent_profile,
         "slab_shell_label_entrainment.nc": out_shell_label_ent,
         "slab_cloud_entrainment.nc": total_cloud_ent_profile,
         "slab_cloud_label_entrainment.nc": out_cloud_label_ent,
+
+        # Detrainment
+        "slab_shell_detrainment.nc": total_shell_det_profile,
+        "slab_shell_label_detrainment.nc": out_shell_label_det,
+        "slab_cloud_detrainment.nc": total_cloud_det_profile,
+        "slab_cloud_label_detrainment.nc": out_cloud_label_det,
+
         "duration": elapsed_str,
     }
 
@@ -284,7 +345,7 @@ if __name__ == '__main__':
     with xr.open_dataset(file_paths["cloud_labels"], decode_times=False, engine="netcdf4") as ds_meta:
         nz, ny, nx = ds_meta.cloud_labels.shape[1:]
 
-        all_time_vals = ds_meta.time.values
+        all_time_vals = ds_meta.time.compute().values
 
         start_time = 154800
         step_delta = 7200
@@ -302,9 +363,9 @@ if __name__ == '__main__':
         num_output_times = len(target_times)
         time_vals = np.array(target_times)
 
-        z_vals = ds_meta.z.values
-        y_vals = ds_meta.y.values
-        x_vals = ds_meta.x.values
+        z_vals = ds_meta.z.compute().values
+        y_vals = ds_meta.y.compute().values
+        x_vals = ds_meta.x.compute().values
         dx = float(ds_meta.x[1] - ds_meta.x[0])
         dy = float(ds_meta.y[1] - ds_meta.y[0])
 
@@ -324,8 +385,15 @@ if __name__ == '__main__':
             f.createVariable("time", "f8", ("time",))[:] = time_vals
             f.createVariable("z", "f4", ("z",))[:] = z_vals
             
+            spatial_3d_files = [
+                "slab_shell_label_entrainment.nc", 
+                "slab_cloud_label_entrainment.nc",
+                "slab_shell_label_detrainment.nc", 
+                "slab_cloud_label_detrainment.nc"
+            ]
+
             # Check if this is a 1D Profile or a full 3D Spatial Grid
-            if filename == "slab_shell_label_entrainment.nc" or filename == "slab_cloud_label_entrainment.nc":
+            if filename in spatial_3d_files:
                 # Setup spatial dims for 3D outputs
                 f.createDimension("y", ny)
                 f.createDimension("x", nx)
@@ -370,7 +438,7 @@ if __name__ == '__main__':
                         continue
                     var_key = EXPORT_REGISTRY[filename][0]
                     
-                    if filename == "slab_shell_label_entrainment.nc" or filename == "slab_cloud_label_entrainment.nc":
+                    if filename in spatial_3d_files:
                         open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
                     else:
                         open_files[filename].variables[var_key][t_idx, :] = data_array

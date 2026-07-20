@@ -176,10 +176,10 @@ if __name__ == '__main__':
         grid_distance = float(ds_cloud_labels.x[1] - ds_cloud_labels.x[0])
         num_times = int(ds_cloud_labels.time.size)
         nz, ny, nx = ds_cloud_labels.cloud_labels.shape[1:]
-        time_vals = ds_cloud_labels.time.values
-        z_vals = ds_cloud_labels.z.values
-        y_vals = ds_cloud_labels.y.values
-        x_vals = ds_cloud_labels.x.values
+        time_vals = ds_cloud_labels.time.compute().values
+        z_vals = ds_cloud_labels.z.compute().values
+        y_vals = ds_cloud_labels.y.compute().values
+        x_vals = ds_cloud_labels.x.compute().values
 
     box_limits = np.array([999999.0, ny * grid_distance, nx * grid_distance])
 
