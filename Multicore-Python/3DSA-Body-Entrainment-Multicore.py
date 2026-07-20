@@ -16,15 +16,29 @@ import argparse
 # GLOBAL CONFIGURATION & SHARED REGISTRY
 # =====================================================================
 EXPORT_REGISTRY = {
-    "slab_shell_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z
-    "slab_shell_label_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
-    "slab_shell_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z
-    "slab_shell_label_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
-    "slab_cloud_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z
-    "slab_cloud_label_entrainment.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
-    "slab_cloud_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z
-    "slab_cloud_label_detrainment.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
-    
+    # Entrainment
+    # - Across other body
+    "slab_shell_entrainment_cloud_boundary.nc": ("entrainment", "f4"), #dimensions: t, z
+    "slab_cloud_entrainment_shell_boundary.nc": ("entrainment", "f4"), #dimensions: t, z
+    "slab_shell_label_entrainment_cloud_boundary.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
+    "slab_cloud_label_entrainment_shell_boundary.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
+    # - Across open air
+    "slab_shell_entrainment_air_boundary.nc": ("entrainment", "f4"), #dimensions: t, z
+    "slab_cloud_entrainment_air_boundary.nc": ("entrainment", "f4"), #dimensions: t, z
+    "slab_shell_label_entrainment_air_boundary.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
+    "slab_cloud_label_entrainment_air_boundary.nc": ("entrainment", "f4"), #dimensions: t, z, y, x
+
+    # Detrainment
+    # - Across other body
+    "slab_shell_detrainment_cloud_boundary.nc": ("detrainment", "f4"), #dimensions: t, z
+    "slab_cloud_detrainment_shell_boundary.nc": ("detrainment", "f4"), #dimensions: t, z
+    "slab_shell_label_detrainment_cloud_boundary.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
+    "slab_cloud_label_detrainment_shell_boundary.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
+    # - Across open air
+    "slab_shell_detrainment_air_boundary.nc": ("detrainment", "f4"), #dimensions: t, z
+    "slab_cloud_detrainment_air_boundary.nc": ("detrainment", "f4"), #dimensions: t, z
+    "slab_shell_label_detrainment_air_boundary.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
+    "slab_cloud_label_detrainment_air_boundary.nc": ("detrainment", "f4"), #dimensions: t, z, y, x
 }
 
 # Physical Constants
@@ -48,6 +62,71 @@ def dilate_mask(source, dilateAmount):
     else:
         return source
 
+def get_intersection_entrainment(origin_body_mask, other_body_mask, nz, ny, nx, ne_x, ne_y, ne_z, dilationAmount):
+    # Preallocate empty sets
+    entrainment_3d = np.zeros((nz, ny, nx), dtype=np.float32)
+    entrainment_profile = np.zeros(nz, dtype=np.float32)
+    detrainment_3d = np.zeros((nz, ny, nx), dtype=np.float32)
+    detrainment_profile = np.zeros(nz, dtype=np.float32)
+
+    # Obtain entrainment and detrainment masks
+    ent_x_mask = ne_x > 0
+    ent_y_mask = ne_y > 0
+    ent_z_mask = ne_z > 0
+    det_x_mask = ne_x < 0
+    det_y_mask = ne_y < 0
+    det_z_mask = ne_z < 0
+
+    # Dilate other body
+    dilated_other_body = dilate_mask(other_body_mask, dilationAmount)
+
+    if not np.any(dilated_other_body):
+        return entrainment_3d, entrainment_profile, detrainment_3d, detrainment_profile
+
+    e_x_mask = dilated_other_body | np.roll(dilated_other_body, shift=1, axis=2)
+    e_y_mask = dilated_other_body | np.roll(dilated_other_body, shift=1, axis=1)
+    e_z_mask = dilated_other_body | np.roll(dilated_other_body, shift=1, axis=0)
+    e_z_mask[0, :, :] = dilated_other_body[0, :, :] # prevent rolling along boundary
+
+    # sum x and y
+    sum_e_x = np.nansum(ne_x * ent_x_mask * e_x_mask, axis=(1, 2))
+    sum_e_y = np.nansum(ne_y * ent_y_mask * e_y_mask, axis=(1, 2))
+    sum_d_x = np.nansum(ne_x * det_x_mask * e_x_mask, axis=(1, 2))
+    sum_d_y = np.nansum(ne_y * det_y_mask * e_y_mask, axis=(1, 2))
+
+    origin_above = origin_body_mask
+    origin_below = np.zeros_like(origin_body_mask)
+    origin_below[1:] = origin_body_mask[:-1]
+
+    case1_mask = e_z_mask & origin_above & ~origin_below # case 1: shell above but not below
+    case2_mask = e_z_mask & origin_below & ~origin_above # case 2: shell below but not above
+
+    # sum z
+    sum_e_z_case1 = np.nansum(ne_z * ent_z_mask * case1_mask, axis=(1, 2))
+    sum_e_z_case2 = np.nansum(ne_z * ent_z_mask * case2_mask, axis=(1, 2))
+    sum_d_z_case1 = np.nansum(ne_z * det_z_mask * case1_mask, axis=(1, 2))
+    sum_d_z_case2 = np.nansum(ne_z * det_z_mask * case2_mask, axis=(1, 2))
+
+    sum_e_z = np.zeros(nz, dtype=np.float32)
+    sum_d_z = np.zeros(nz, dtype=np.float32)
+
+    sum_e_z += sum_e_z_case1
+    sum_e_z[:-1] += sum_e_z_case2[1:]  # Shift map back down safely
+    sum_d_z += sum_d_z_case1
+    sum_d_z[:-1] += sum_d_z_case2[1:]  # Shift map back down safely
+
+    # apply sums
+    sum_e_total = (sum_e_x + sum_e_y + sum_e_z)
+    sum_d_total = (sum_d_x + sum_d_y + sum_d_z)
+    broadcasted_sum_e = sum_e_total[:, np.newaxis, np.newaxis]
+    broadcasted_sum_d = sum_d_total[:, np.newaxis, np.newaxis]
+
+    entrainment_3d += broadcasted_sum_e * origin_body_mask
+    detrainment_3d += broadcasted_sum_d * origin_body_mask
+    entrainment_profile += sum_e_total
+    detrainment_profile += sum_d_total
+    return entrainment_3d, entrainment_profile, detrainment_3d, detrainment_profile
+
 # --- Multiprocessing Worker Function ---
 def process_timestep_worker(task):
     """
@@ -70,18 +149,34 @@ def process_timestep_worker(task):
     with xr.open_dataset(paths["shell_labels"], decode_times=False) as ds_shell:
         shell_labels = ds_shell.shell_labels.sel(time=t_val).values
 
-    # pre-allocate sets
+    # --- Pre-allocate sets ---
     nz, ny, nx = cloud_labels.shape
 
-    out_shell_label_det = np.zeros((nz, ny, nx), dtype=np.float32)
-    out_cloud_label_det = np.zeros((nz, ny, nx), dtype=np.float32)
-    total_shell_det_profile = np.zeros(nz, dtype=np.float32)
-    total_cloud_det_profile = np.zeros(nz, dtype=np.float32)
-    
+    # Entrainment
+    # -Across other body
     out_shell_label_ent = np.zeros((nz, ny, nx), dtype=np.float32)
     out_cloud_label_ent = np.zeros((nz, ny, nx), dtype=np.float32)
     total_shell_ent_profile = np.zeros(nz, dtype=np.float32)
     total_cloud_ent_profile = np.zeros(nz, dtype=np.float32)
+    # -Across open air
+    out_shell_label_ent_air = np.zeros((nz, ny, nx), dtype=np.float32)
+    out_cloud_label_ent_air = np.zeros((nz, ny, nx), dtype=np.float32)
+    total_shell_ent_profile_air = np.zeros(nz, dtype=np.float32)
+    total_cloud_ent_profile_air = np.zeros(nz, dtype=np.float32)
+
+    # Detrainment 
+    # -Across other body
+    out_shell_label_det = np.zeros((nz, ny, nx), dtype=np.float32)
+    out_cloud_label_det = np.zeros((nz, ny, nx), dtype=np.float32)
+    total_shell_det_profile = np.zeros(nz, dtype=np.float32)
+    total_cloud_det_profile = np.zeros(nz, dtype=np.float32)
+    # -Across open air
+    out_shell_label_det_air = np.zeros((nz, ny, nx), dtype=np.float32)
+    out_cloud_label_det_air = np.zeros((nz, ny, nx), dtype=np.float32)
+    total_shell_det_profile_air = np.zeros(nz, dtype=np.float32)
+    total_cloud_det_profile_air = np.zeros(nz, dtype=np.float32)
+    
+    
 
     with xr.open_dataset(paths["netE"], decode_times=False) as ds_e:
         # Helper inline function to slice and filter on the fly
@@ -97,25 +192,9 @@ def process_timestep_worker(task):
         shell_ne_y = load_and_filter("netE_flux_y_shell")
         shell_ne_z = load_and_filter("netE_flux_z_shell")
 
-    # Separate entrainment and detrainment
-    cloud_e_x_mask = cloud_ne_x > 0
-    cloud_e_y_mask = cloud_ne_y > 0
-    cloud_e_z_mask = cloud_ne_z > 0
-
-    cloud_d_x_mask = cloud_ne_x < 0
-    cloud_d_y_mask = cloud_ne_y < 0
-    cloud_d_z_mask = cloud_ne_z < 0
-
-    shell_e_x_mask = shell_ne_x > 0
-    shell_e_y_mask = shell_ne_y > 0
-    shell_e_z_mask = shell_ne_z > 0
-
-    shell_d_x_mask = shell_ne_x < 0
-    shell_d_y_mask = shell_ne_y < 0
-    shell_d_z_mask = shell_ne_z < 0
-
+    open_air_mask = combined_labels == 0
     # ----------------------------------------------------------------------
-    # Step 1 - Shell Entrainment (Accumulates Shell Fluxes near Cloud Edges)
+    # Step 1 - Shell Entrainment (Accumulates Shell Fluxes near Cloud/Air Edges)
     # ----------------------------------------------------------------------
 
     # -- Iterate through shell
@@ -123,11 +202,14 @@ def process_timestep_worker(task):
     shell_list = shell_list[shell_list != 0]
 
     for label_i in shell_list:
+        shell_target = (shell_labels == label_i)
 
+        # --- 1A : Across Cloud ---
         # obtain combined mask for that shell index
         label_mask = (combined_labels == label_i)
+        
 
-        # Iterate through each cloud
+        # Use contained clouds
         contained_cloud_list = np.unique(cloud_labels[label_mask])
         contained_cloud_list = contained_cloud_list[contained_cloud_list != 0]
 
@@ -136,54 +218,19 @@ def process_timestep_worker(task):
 
         combined_cloud_mask = np.isin(cloud_labels, contained_cloud_list)
 
-        dilated_clouds = dilate_mask(combined_cloud_mask, dilation_const)
+        ent3d, ent, det3d, det = get_intersection_entrainment(shell_target, combined_cloud_mask, nz, ny, nx, shell_ne_x, shell_ne_y, shell_ne_z, dilation_const)
+        out_shell_label_ent += ent3d
+        out_shell_label_det += det3d
+        total_shell_ent_profile += ent
+        total_shell_det_profile += det
 
-        if not np.any(dilated_clouds):
-            continue
-
-        e_x_mask = dilated_clouds | np.roll(dilated_clouds, shift=1, axis=2)
-        e_y_mask = dilated_clouds | np.roll(dilated_clouds, shift=1, axis=1)
-        e_z_mask = dilated_clouds | np.roll(dilated_clouds, shift=1, axis=0)
-        e_z_mask[0, :, :] = dilated_clouds[0, :, :] # prevent rolling along boundary
-
-        # sum x and y
-        sum_e_x = np.nansum(shell_ne_x * shell_e_x_mask * e_x_mask, axis=(1, 2))
-        sum_e_y = np.nansum(shell_ne_y * shell_e_y_mask * e_y_mask, axis=(1, 2))
-        sum_d_x = np.nansum(shell_ne_x * shell_d_x_mask * e_x_mask, axis=(1, 2))
-        sum_d_y = np.nansum(shell_ne_y * shell_d_y_mask * e_y_mask, axis=(1, 2))
-
-        shell_target = (shell_labels == label_i)
-        shell_above = shell_target
-        shell_below = np.zeros_like(shell_target)
-        shell_below[1:] = shell_target[:-1]
-
-        case1_mask = e_z_mask & shell_above & ~shell_below # case 1: shell above but not below
-        case2_mask = e_z_mask & shell_below & ~shell_above # case 2: shell below but not above
-
-        # sum z
-        sum_e_z_case1 = np.nansum(shell_ne_z * shell_e_z_mask * case1_mask, axis=(1, 2))
-        sum_e_z_case2 = np.nansum(shell_ne_z * shell_e_z_mask * case2_mask, axis=(1, 2))
-        sum_d_z_case1 = np.nansum(shell_ne_z * shell_d_z_mask * case1_mask, axis=(1, 2))
-        sum_d_z_case2 = np.nansum(shell_ne_z * shell_d_z_mask * case2_mask, axis=(1, 2))
-
-        sum_e_z = np.zeros(nz, dtype=np.float32)
-        sum_d_z = np.zeros(nz, dtype=np.float32)
-
-        sum_e_z += sum_e_z_case1
-        sum_e_z[:-1] += sum_e_z_case2[1:]  # Shift map back down safely
-        sum_d_z += sum_d_z_case1
-        sum_d_z[:-1] += sum_d_z_case2[1:]  # Shift map back down safely
-
-        # apply sums
-        sum_e_total = (sum_e_x + sum_e_y + sum_e_z)
-        sum_d_total = (sum_d_x + sum_d_y + sum_d_z)
-        broadcasted_sum_e = sum_e_total[:, np.newaxis, np.newaxis]
-        broadcasted_sum_d = sum_d_total[:, np.newaxis, np.newaxis]
-
-        out_shell_label_ent += broadcasted_sum_e * label_mask
-        out_shell_label_det += broadcasted_sum_d * label_mask
-        total_shell_ent_profile += sum_e_total
-        total_shell_det_profile += sum_d_total
+        # --- 1B: Across open air ---
+        ent3d, ent, det3d, det = get_intersection_entrainment(shell_target, open_air_mask, nz, ny, nx, shell_ne_x, shell_ne_y, shell_ne_z, dilation_const)
+        out_shell_label_ent_air += ent3d
+        out_shell_label_det_air += det3d
+        total_shell_ent_profile_air += ent
+        total_shell_det_profile_air += det
+        
         
 
     # ----------------------------------------------------------------------
@@ -195,6 +242,7 @@ def process_timestep_worker(task):
     for c_label_i in cloud_list:
         cloud_target = (cloud_labels == c_label_i)
 
+        # --- 2A : Across shell ---
         # Finds the index of the very first True value in the cloud mask
         first_idx = np.argmax(cloud_target) 
         label_i = combined_labels.flat[first_idx]
@@ -205,68 +253,50 @@ def process_timestep_worker(task):
         if not np.any(current_shell):
             continue
 
-        dilated_shell = dilate_mask(current_shell, dilation_const)
-        if not np.any(dilated_shell):
-            continue
+        ent3d, ent, det3d, det = get_intersection_entrainment(cloud_target, current_shell, nz, ny, nx, cloud_ne_x, cloud_ne_y, cloud_ne_z, dilation_const)
 
-        e_x_mask = dilated_shell | np.roll(dilated_shell, shift=1, axis=2)
-        e_y_mask = dilated_shell | np.roll(dilated_shell, shift=1, axis=1)
-        e_z_mask = dilated_shell | np.roll(dilated_shell, shift=1, axis=0)
-        e_z_mask[0, :, :] = dilated_shell[0, :, :] # prevent rolling along boundary
+        out_cloud_label_ent += ent3d
+        total_cloud_ent_profile += ent
+        out_cloud_label_det += det3d
+        total_cloud_det_profile += det
 
-        # sum x,y
-        sum_e_x = np.nansum(cloud_ne_x * cloud_e_x_mask * e_x_mask, axis=(1, 2))
-        sum_e_y = np.nansum(cloud_ne_y * cloud_e_y_mask * e_y_mask, axis=(1, 2))
-        sum_d_x = np.nansum(cloud_ne_x * cloud_d_x_mask * e_x_mask, axis=(1, 2))
-        sum_d_y = np.nansum(cloud_ne_y * cloud_d_y_mask * e_y_mask, axis=(1, 2))
+        # --- 2B : Across open air ---
+        ent3d, ent, det3d, det = get_intersection_entrainment(cloud_target, open_air_mask, nz, ny, nx, cloud_ne_x, cloud_ne_y, cloud_ne_z, dilation_const)
 
-        cloud_above = cloud_target
-        cloud_below = np.zeros_like(cloud_target)
-        cloud_below[1:] = cloud_target[:-1]
-
-        case1_mask = e_z_mask & cloud_above & ~cloud_below # case 1: shell above but not below
-        case2_mask = e_z_mask & cloud_below & ~cloud_above # case 2: shell below but not above
-
-        sum_e_z_case1 = np.nansum(cloud_ne_z * cloud_e_z_mask * case1_mask, axis=(1, 2))
-        sum_e_z_case2 = np.nansum(cloud_ne_z * cloud_e_z_mask * case2_mask, axis=(1, 2))
-        sum_d_z_case1 = np.nansum(cloud_ne_z * cloud_d_z_mask * case1_mask, axis=(1, 2))
-        sum_d_z_case2 = np.nansum(cloud_ne_z * cloud_d_z_mask * case2_mask, axis=(1, 2))
-
-        sum_e_z = np.zeros(nz, dtype=np.float32)
-        sum_d_z = np.zeros(nz, dtype=np.float32)
-
-        sum_e_z += sum_e_z_case1
-        sum_e_z[:-1] += sum_e_z_case2[1:]
-        sum_d_z += sum_d_z_case1
-        sum_d_z[:-1] += sum_d_z_case2[1:]
-
-        sum_e_total = (sum_e_x + sum_e_y + sum_e_z)
-        sum_d_total = (sum_d_x + sum_d_y + sum_d_z)
-
-        broadcasted_sum_e = sum_e_total[:, np.newaxis, np.newaxis]
-        broadcasted_sum_d = sum_d_total[:, np.newaxis, np.newaxis]
-
-        out_cloud_label_ent += broadcasted_sum_e * cloud_target
-        total_cloud_ent_profile += sum_e_total
-
-        out_cloud_label_det += broadcasted_sum_d * cloud_target
-        total_cloud_det_profile += sum_d_total
+        out_cloud_label_ent_air += ent3d
+        total_cloud_ent_profile_air += ent
+        out_cloud_label_det_air += det3d
+        total_cloud_det_profile_air += det
 
             
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
     return t_idx, t_val, {
-        # Entrainment
-        "slab_shell_entrainment.nc": total_shell_ent_profile,
-        "slab_shell_label_entrainment.nc": out_shell_label_ent,
-        "slab_cloud_entrainment.nc": total_cloud_ent_profile,
-        "slab_cloud_label_entrainment.nc": out_cloud_label_ent,
+        # Across other body
+        # -Entrainment
+        "slab_shell_entrainment_cloud_boundary.nc": total_shell_ent_profile,
+        "slab_shell_label_entrainment_cloud_boundary.nc": out_shell_label_ent,
+        "slab_cloud_entrainment_shell_boundary.nc": total_cloud_ent_profile,
+        "slab_cloud_label_entrainment_shell_boundary.nc": out_cloud_label_ent,
 
-        # Detrainment
-        "slab_shell_detrainment.nc": total_shell_det_profile,
-        "slab_shell_label_detrainment.nc": out_shell_label_det,
-        "slab_cloud_detrainment.nc": total_cloud_det_profile,
-        "slab_cloud_label_detrainment.nc": out_cloud_label_det,
+        # -Detrainment
+        "slab_shell_detrainment_cloud_boundary.nc": total_shell_det_profile,
+        "slab_shell_label_detrainment_cloud_boundary.nc": out_shell_label_det,
+        "slab_cloud_detrainment_shell_boundary.nc": total_cloud_det_profile,
+        "slab_cloud_label_detrainment_shell_boundary.nc": out_cloud_label_det,
+
+        # Across open air
+        # -Entrainment
+        "slab_shell_entrainment_air_boundary.nc": total_shell_ent_profile_air,
+        "slab_shell_label_entrainment_air_boundary.nc": out_shell_label_ent_air,
+        "slab_cloud_entrainment_air_boundary.nc": total_cloud_ent_profile_air,
+        "slab_cloud_label_entrainment_air_boundary.nc": out_cloud_label_ent_air,
+
+        # -Detrainment
+        "slab_shell_detrainment_air_boundary.nc": total_shell_det_profile_air,
+        "slab_shell_label_detrainment_air_boundary.nc": out_shell_label_det_air,
+        "slab_cloud_detrainment_air_boundary.nc": total_cloud_det_profile_air,
+        "slab_cloud_label_detrainment_air_boundary.nc": out_cloud_label_det_air,
 
         "duration": elapsed_str,
     }
@@ -384,16 +414,9 @@ if __name__ == '__main__':
             f.createDimension("z", nz)
             f.createVariable("time", "f8", ("time",))[:] = time_vals
             f.createVariable("z", "f4", ("z",))[:] = z_vals
-            
-            spatial_3d_files = [
-                "slab_shell_label_entrainment.nc", 
-                "slab_cloud_label_entrainment.nc",
-                "slab_shell_label_detrainment.nc", 
-                "slab_cloud_label_detrainment.nc"
-            ]
 
             # Check if this is a 1D Profile or a full 3D Spatial Grid
-            if filename in spatial_3d_files:
+            if "_label_" in filename:
                 # Setup spatial dims for 3D outputs
                 f.createDimension("y", ny)
                 f.createDimension("x", nx)
@@ -438,7 +461,7 @@ if __name__ == '__main__':
                         continue
                     var_key = EXPORT_REGISTRY[filename][0]
                     
-                    if filename in spatial_3d_files:
+                    if "_label_" in filename:
                         open_files[filename].variables[var_key][t_idx, :, :, :] = data_array
                     else:
                         open_files[filename].variables[var_key][t_idx, :] = data_array

@@ -100,7 +100,8 @@ def process_timestep_worker(args):
     # This ensures we don't repeatedly open distance files inside the loop either
     distance_volumes = {}
     for c_type, file_key in DISTANCE_COORDS.items():
-        distance_volumes[c_type] = worker_datasets[file_key][file_key].sel(time=t_val).values
+        var_name = "normalized_distance" if "norm_" in c_type else "distance"
+        distance_volumes[c_type] = worker_datasets[file_key][var_name].sel(time=t_val).values
 
     # 3. Compute
     for var_key in PHYSICAL_VARS:
@@ -288,7 +289,8 @@ if __name__ == '__main__':
     for c_type, file_key in DISTANCE_COORDS.items():
         with xr.open_dataset(file_registry[file_key], decode_times=False) as ds_dist:
             # Load the unique values across all relevant active timesteps
-            subset = ds_dist[file_key].sel(time=time_vals).values
+            var_name = "normalized_distance" if "norm_" in c_type else "distance"
+            subset = ds_dist[var_name].sel(time=time_vals).values
             
             if "norm_" in c_type:
                 # Strategy A: Fractional binning from absolute min to max in 0.01 increments
