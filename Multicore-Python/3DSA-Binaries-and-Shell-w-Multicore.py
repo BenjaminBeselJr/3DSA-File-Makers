@@ -241,7 +241,7 @@ if __name__ == '__main__':
 
         # ─── TEMPORARY DEBUG SLICE ──────────────────────────────────────────
         # Change [:3] to whatever number of test timesteps you want (e.g., [:5], [:1])
-        target_times = target_times[:3] 
+        #target_times = target_times[:3] 
         # ────────────────────────────────────────────────────────────────────
 
         if not target_times:
