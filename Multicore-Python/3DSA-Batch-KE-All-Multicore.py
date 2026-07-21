@@ -208,14 +208,19 @@ if __name__ == '__main__':
 
         all_time_vals = ds_meta.time.compute().values
 
-        start_time = 154800
-        step_delta = 7200
-
-        
-        target_times = [
-            float(t_val) for t_val in all_time_vals
-            if t_val >= start_time and (t_val - start_time) % step_delta == 0
-        ]
+        if source_key in ["SEUS", "RICO"]:
+            if source_key in "SEUS":
+                start_time = 154800
+                step_delta = 7200
+            elif source_key in "RICO":
+                start_time = 3600
+                step_delta = 3600
+            target_times = [
+                float(t_val) for t_val in all_time_vals
+                if t_val >= start_time and (t_val - start_time) % step_delta == 0
+            ]
+        else:
+            target_times = all_time_vals
 
         if not target_times:
             print("❌ ERROR: No physical times matched the selection criteria!", file=sys.stderr)

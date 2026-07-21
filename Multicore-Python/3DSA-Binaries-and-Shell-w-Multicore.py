@@ -225,15 +225,19 @@ if __name__ == '__main__':
         nz, ny, nx = ds_meta.ql.shape[1:]
 
         all_time_vals = ds_ex_e.time.compute().values
-
-        start_time = 154800
-        step_delta = 7200
-
-        
-        target_times = [
-            float(t_val) for t_val in all_time_vals
-            if t_val >= start_time and (t_val - start_time) % step_delta == 0
-        ]
+        if source_key in ["SEUS", "RICO"]:
+            if source_key in "SEUS":
+                start_time = 154800
+                step_delta = 7200
+            elif source_key in "RICO":
+                start_time = 3600
+                step_delta = 3600
+            target_times = [
+                float(t_val) for t_val in all_time_vals
+                if t_val >= start_time and (t_val - start_time) % step_delta == 0
+            ]
+        else:
+            target_times = all_time_vals
 
         # ─── TEMPORARY DEBUG SLICE ──────────────────────────────────────────
         # Change [:3] to whatever number of test timesteps you want (e.g., [:5], [:1])
