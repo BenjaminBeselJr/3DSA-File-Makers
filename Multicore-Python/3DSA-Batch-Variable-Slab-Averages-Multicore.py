@@ -30,10 +30,10 @@ MASK_KEYS = [
 ]
 
 DISTANCE_COORDS = {
-    "dist_shell_term": "distance_from_shell_termination",
+    "dist_shell_top": "distance_from_shell_top",
     "dist_cloud_top": "distance_from_cloud_top",
     "norm_cloud_base": "normalized_distance_from_cloud_base",
-    "norm_shell_origin": "normalized_distance_from_shell_origin"
+    "norm_shell_base": "normalized_distance_from_shell_base"
 }
 
 NORMALIZED_STEP = 0.01

@@ -18,8 +18,8 @@ import argparse
 # GLOBAL CONFIGURATION & SHARED REGISTRY
 # =====================================================================
 EXPORT_REGISTRY = {
-    "shell_origin.nc": ("shell_origin", "f4"),
-    "shell_termination.nc": ("shell_termination", "f4"),
+    "shell_base.nc": ("shell_base", "f4"),
+    "shell_top.nc": ("shell_top", "f4"),
     "shell_depth.nc": ("shell_depth", "f4"),
     "cloud_base.nc": ("cloud_base", "f4"),
     "cloud_top.nc": ("cloud_top", "f4"),
@@ -27,10 +27,10 @@ EXPORT_REGISTRY = {
     "shallow_mask.nc": ("shallow_mask", "u1"),
     "congestus_mask.nc": ("congestus_mask", "u1"),
     "deep_mask.nc": ("deep_mask", "u1"),
-    "distance_from_shell_termination.nc": ("distance", "f4"),
+    "distance_from_shell_top.nc": ("distance", "f4"),
     "distance_from_cloud_top.nc": ("distance", "f4"),
     "normalized_distance_from_cloud_base.nc": ("normalized_distance", "f4"),
-    "normalized_distance_from_shell_origin.nc": ("normalized_distance", "f4")
+    "normalized_distance_from_shell_base.nc": ("normalized_distance", "f4")
 }
 
 def get_valid_min(numpy_arr, mask):
@@ -79,8 +79,8 @@ def process_timestep_worker(args):
     grid_shape = shell_labels_slice.shape
 
     #initialize local arrays for this timestep
-    local_shell_origin = np.full(grid_shape, np.nan, dtype=np.float32)
-    local_shell_termination = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_shell_base = np.full(grid_shape, np.nan, dtype=np.float32)
+    local_shell_top = np.full(grid_shape, np.nan, dtype=np.float32)
     local_shell_depth = np.full(grid_shape, np.nan, dtype=np.float32)
     local_cloud_bottom = np.full(grid_shape, np.nan, dtype=np.float32)
     local_cloud_top = np.full(grid_shape, np.nan, dtype=np.float32)
@@ -153,8 +153,8 @@ def process_timestep_worker(args):
                 max_z_shell = z_coordinates[shell_z_indices.max()]
                 shell_depth = max_z_shell - min_z_shell
 
-                local_shell_origin[combined_obj_mask] = min_z_shell
-                local_shell_termination[combined_obj_mask] = max_z_shell
+                local_shell_base[combined_obj_mask] = min_z_shell
+                local_shell_top[combined_obj_mask] = max_z_shell
                 local_shell_depth[combined_obj_mask] = shell_depth
 
                 #Shell Distances
@@ -204,8 +204,8 @@ def process_timestep_worker(args):
                     "lowest_cloud_base": float(contained_min_z_cloud) if not np.isnan(contained_min_z_cloud) else None,
                     "highest_cloud_top": float(contained_max_z_cloud) if not np.isnan(contained_max_z_cloud) else None,
                     "combined_cloud_depth": float(contained_cloud_depth) if not np.isnan(contained_cloud_depth) else None,
-                    "shell_origin": float(min_z_shell) if not np.isnan(min_z_shell) else None,
-                    "shell_termination": float(max_z_shell) if not np.isnan(max_z_shell) else None,
+                    "shell_base": float(min_z_shell) if not np.isnan(min_z_shell) else None,
+                    "shell_top": float(max_z_shell) if not np.isnan(max_z_shell) else None,
                     "shell_depth": float(shell_depth) if not np.isnan(shell_depth) else None,
                     "class": contained_classification
                 }
@@ -216,16 +216,16 @@ def process_timestep_worker(args):
     # --- Exporting ---
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
     return t, {
-        "shell_origin.nc": local_shell_origin,
-        "shell_termination.nc": local_shell_termination,
+        "shell_base.nc": local_shell_base,
+        "shell_top.nc": local_shell_top,
         "shell_depth.nc": local_shell_depth,
         "cloud_base.nc": local_cloud_bottom,
         "cloud_top.nc": local_cloud_top,
         "cloud_depth.nc": local_cloud_depth,
-        "distance_from_shell_termination.nc": local_dfst,
+        "distance_from_shell_top.nc": local_dfst,
         "distance_from_cloud_top.nc": local_dfct,
         "normalized_distance_from_cloud_base.nc": local_ndfcb,
-        "normalized_distance_from_shell_origin.nc": local_ndfso,
+        "normalized_distance_from_shell_base.nc": local_ndfso,
         "shallow_mask.nc": local_shallow_mask,
         "congestus_mask.nc": local_congestus_mask,
         "deep_mask.nc": local_deep_mask,

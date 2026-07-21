@@ -24,7 +24,7 @@ MASK_KEYS = [
     "deep", "free_shell", "shallow_shell", "congestus_shell", "deep_shell"
 ]
 
-DISTANCE_KEYS = ["geom_z", "dist_shell_term", "dist_cloud_top", "norm_cloud_base", "norm_shell_origin"]
+DISTANCE_KEYS = ["geom_z", "dist_shell_top", "dist_cloud_top", "norm_cloud_base", "norm_shell_base"]
 
 # --- Multiprocessing Worker Function ---
 def process_group_worker(args):

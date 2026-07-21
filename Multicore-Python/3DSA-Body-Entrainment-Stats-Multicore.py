@@ -20,10 +20,10 @@ EXPORT_REGISTRY = {
 }
 
 DISTANCE_COORDS = {
-    "dist_shell_term": "distance_from_shell_termination",
+    "dist_shell_top": "Distance_from_shell_top",
     "dist_cloud_top": "distance_from_cloud_top",
     "norm_cloud_base": "normalized_distance_from_cloud_base",
-    "norm_shell_origin": "normalized_distance_from_shell_origin"
+    "norm_shell_base": "Normalized_distance_from_shell_base"
 }
 
 NORMALIZED_STEP = 0.01
@@ -54,18 +54,18 @@ SUB_GROUP_STRUCTURE = {
 
 GROUPS_STRUCTURE = {
     "Sum": SUB_GROUP_STRUCTURE.copy(),
-    "Distance_from_shell_termination": SUB_GROUP_STRUCTURE.copy(),
+    "Distance_from_shell_top": SUB_GROUP_STRUCTURE.copy(),
     "Distance_from_cloud_top": SUB_GROUP_STRUCTURE.copy(),
     "Normalized_distance_from_cloud_base": SUB_GROUP_STRUCTURE.copy(),
-    "Normalized_distance_from_shell_origin": SUB_GROUP_STRUCTURE.copy()
+    "Normalized_distance_from_shell_base": SUB_GROUP_STRUCTURE.copy()
 }
 
 COORD_MAP = {
     "Sum": "geom_z",
-    "Distance_from_shell_termination": "dist_shell_term",
+    "Distance_from_shell_top": "dist_shell_top",
     "Distance_from_cloud_top": "dist_cloud_top",
     "Normalized_distance_from_cloud_base": "norm_cloud_base",
-    "Normalized_distance_from_shell_origin": "norm_shell_origin"
+    "Normalized_distance_from_shell_base": "norm_shell_base"
 }
 
 def init_worker_process(paths_config, variable_config):
@@ -330,8 +330,21 @@ def process_timestep_worker(args):
             results[top_name][mid_name] = {}
             for body_name, e_types in body_struct.items():
                 results[top_name][mid_name][body_name] = {}
+
+                # Identify level indices where no points were sampled
+                pt_count = sum_accumulator[top_name][mid_name][body_name]["Point_Count"]
+                zero_pts_mask = (pt_count == 0)
+
                 for e_type in e_types:
-                    results[top_name][mid_name][body_name][e_type] = sum_accumulator[top_name][mid_name][body_name][e_type].astype(np.float32)
+                    arr = sum_accumulator[top_name][mid_name][body_name][e_type].astype(np.float32)
+
+                    if e_type != "Point_Count":
+                        arr[zero_pts_mask] = np.nan
+                    else:
+                        # Keep Point_Count as 0 (or change to np.nan if you prefer counts to be NaN too)
+                        arr[zero_pts_mask] = 0.0
+
+                    results[top_name][mid_name][body_name][e_type] = arr
 
     del cloud_labels, shell_labels, masks, distance_volumes, sum_accumulator
     gc.collect()
@@ -459,7 +472,7 @@ if __name__ == '__main__':
     global_coord_values = {"z_grid": z_vals}
     for c_type, file_key in DISTANCE_COORDS.items():
         with nc.Dataset(str(file_paths[file_key]), "r") as ds_dist:
-            subset = ds_dist.variables[file_key][:]
+            subset = ds_dist.variables[file_var_names[file_key]][:]
             if "norm_" in c_type:
                 bin_min = np.floor(np.nanmin(subset) / NORMALIZED_STEP) * NORMALIZED_STEP
                 bin_max = np.ceil(np.nanmax(subset) / NORMALIZED_STEP) * NORMALIZED_STEP
