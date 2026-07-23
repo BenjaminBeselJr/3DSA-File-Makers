@@ -7,7 +7,8 @@
         },
 
         "SEUS": {
-            "source_input_dir": "/mnt/stor-pool-01/projects/heus/BNF/Ensemble_Tests/512_512_50m_12km_chbuff/2025-07-01_normal_shell/thijs",
+            "source_input_dir": "/mnt/stor-pool-01/projects/heus/BNF/Ensemble_Tests/512_512_50m_12km_chbuff/2025-07-01_normal_shell/thijs/rerun",
+            "net_E_source_input_dir": "/mnt/stor-pool-01/projects/heus/BNF/Ensemble_Tests/512_512_50m_12km_chbuff/2025-07-01_normal_shell/thijs",
             "output_dir": "/mnt/stor-pool-01/projects/heus/ShellAnalysis/SEUS",
             "default_file_name" : "SEUS.default.0000000.nc"
         },

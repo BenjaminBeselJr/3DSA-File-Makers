@@ -243,6 +243,10 @@ if __name__ == '__main__':
 
     # Extract Paths
     source_input_dir = Path(config_data["paths"][source_key]["source_input_dir"])
+    if source_key in "SEUS":
+        path_net_E = Path(config_data["paths"][source_key]["net_E_source_input_dir"])
+    else:
+        path_net_E = source_input_dir
     output_dir = Path(config_data["paths"][source_key]["output_dir"])
     default_fname = Path(config_data["paths"][source_key]["default_file_name"])
 
@@ -268,7 +272,7 @@ if __name__ == '__main__':
         "u": source_input_dir / "u.nc",
         "v": source_input_dir / "v.nc",
         "initial": source_input_dir / default_fname,
-        "netE": source_input_dir / "netE.nc"
+        "netE": path_net_E / "netE.nc"
     }
     #Check that files exist
     for name, path in file_paths.items():
