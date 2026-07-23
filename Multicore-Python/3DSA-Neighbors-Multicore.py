@@ -23,6 +23,7 @@ EXPORT_REGISTRY = {
     "shallow_neighbors.nc": "shallow_neighbors",
     "congestus_neighbors.nc": "congestus_neighbors",
     "deep_neighbors.nc": "deep_neighbors",
+    "high_neighbors.nc": "high_neighbors"
 }
 
 def pad(source):
@@ -83,6 +84,9 @@ def process_timestep_worker(args):
     with xr.open_dataset(paths["deep_mask"], decode_times=False, engine="netcdf4") as ds:
         deep_mask = ds.deep_mask.isel(time=t).values.astype(bool)
 
+    with xr.open_dataset(paths["high_mask"], decode_times=False, engine="netcdf4") as ds:
+            high_mask = ds.high_mask.isel(time=t).values.astype(bool)
+
     free_air_mask = ~(cloud_mask | shell_mask)
 
     masks_to_process = {
@@ -92,13 +96,14 @@ def process_timestep_worker(args):
         "free_shell_neighbors.nc": free_shell_mask,
         "shallow_neighbors.nc": shallow_mask,
         "congestus_neighbors.nc": congestus_mask,
-        "deep_neighbors.nc": deep_mask
+        "deep_neighbors.nc": deep_mask,
+        "high_neighbors.nc": high_mask
     }
 
     payload = {}
     for filename, mask_array in masks_to_process.items():
         payload[filename] = compute_neighbor_bitmask(pad(mask_array))
-    del cloud_mask, shell_mask, free_shell_mask, shallow_mask, congestus_mask, deep_mask, free_air_mask
+    del cloud_mask, shell_mask, free_shell_mask, shallow_mask, congestus_mask, deep_mask, high_mask, free_air_mask
     gc.collect()
 
     # --- Exporting ---
@@ -168,6 +173,7 @@ if __name__ == '__main__':
         "shallow_mask": output_dir / "shallow_mask.nc",
         "congestus_mask": output_dir / "congestus_mask.nc",
         "deep_mask": output_dir / "deep_mask.nc",
+        "high_mask": output_dir / "high_mask.nc"
     }
     #Check that files exist
     for name, path in file_paths.items():

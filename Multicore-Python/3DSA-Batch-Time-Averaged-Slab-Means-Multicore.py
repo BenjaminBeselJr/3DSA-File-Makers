@@ -20,8 +20,8 @@ PHYSICAL_VARS = [
 ]
 
 MASK_KEYS = [
-    "domain", "cloud", "shell", "shallow", "congestus", 
-    "deep", "free_shell", "shallow_shell", "congestus_shell", "deep_shell"
+    "domain", "cloud", "shell", "shallow", "congestus", "deep", "high",
+    "free_shell", "shallow_shell", "congestus_shell", "deep_shell", "high_shell"
 ]
 
 DISTANCE_KEYS = ["geom_z", "dist_shell_top", "dist_cloud_top", "norm_cloud_base", "norm_shell_base"]

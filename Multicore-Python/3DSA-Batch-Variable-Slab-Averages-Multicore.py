@@ -25,8 +25,8 @@ COMPUTED_VARS = ["b_eff", "qv"]
 LOADED_VARS = [v for v in PHYSICAL_VARS if v not in COMPUTED_VARS]
 
 MASK_KEYS = [
-    "domain", "cloud", "shell", "shallow", "congestus", 
-    "deep", "free_shell", "shallow_shell", "congestus_shell", "deep_shell"
+    "domain", "cloud", "shell", "shallow", "congestus", "deep", "high",
+    "free_shell", "shallow_shell", "congestus_shell", "deep_shell", "high_shell"
 ]
 
 DISTANCE_COORDS = {
@@ -48,7 +48,7 @@ def init_worker_process(paths_config):
     """
     global worker_datasets
     
-    mask_keys = ["free_shell_mask", "shell_mask", "shallow_mask", "congestus_mask", "deep_mask", "cloud_mask"]
+    mask_keys = ["free_shell_mask", "shell_mask", "shallow_mask", "congestus_mask", "deep_mask", "cloud_mask", "high_mask"]
     dist_keys = list(DISTANCE_COORDS.values())
     
     all_keys = LOADED_VARS + mask_keys + dist_keys
@@ -80,6 +80,7 @@ def process_timestep_worker(args):
     m_shallow = worker_datasets["shallow_mask"].shallow_mask.sel(time=t_val).values.astype(bool)
     m_congestus = worker_datasets["congestus_mask"].congestus_mask.sel(time=t_val).values.astype(bool)
     m_deep = worker_datasets["deep_mask"].deep_mask.sel(time=t_val).values.astype(bool)
+    m_high = worker_datasets["high_mask"].high_mask.sel(time=t_val).values.astype(bool)
     m_free = worker_datasets["free_shell_mask"].shell_mask.sel(time=t_val).values.astype(bool)
     m_cloud = worker_datasets["cloud_mask"].cloud_mask.sel(time=t_val).values.astype(bool)
 
@@ -90,10 +91,12 @@ def process_timestep_worker(args):
         "shallow": m_shallow & m_cloud,
         "congestus": m_congestus & m_cloud,
         "deep": m_deep & m_cloud,
+        "high": m_high & m_cloud,
         "free_shell": m_free,
         "shallow_shell": m_shallow & m_shell,
         "congestus_shell": m_congestus & m_shell,
-        "deep_shell": m_deep & m_shell
+        "deep_shell": m_deep & m_shell,
+        "high_shell": m_high & m_shell
     }
 
     # 2. Pre-load all 4 Distance Volume Coordinates up front
@@ -245,6 +248,7 @@ if __name__ == '__main__':
     file_registry["shallow_mask"] = output_dir / "shallow_mask.nc"
     file_registry["congestus_mask"] = output_dir / "congestus_mask.nc"
     file_registry["deep_mask"] = output_dir / "deep_mask.nc"
+    file_registry["high_mask"] = output_dir / "high_mask.nc"
     file_registry["free_shell_mask"] = output_dir / "free_shell_mask.nc"
     file_registry["cloud_mask"] = output_dir / "cloud_mask.nc"
 

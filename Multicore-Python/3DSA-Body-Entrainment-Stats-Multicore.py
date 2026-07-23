@@ -49,6 +49,7 @@ SUB_GROUP_STRUCTURE = {
     "Shallow": BODY_GROUP_STRUCTURE["Normal"].copy(),
     "Congestus": BODY_GROUP_STRUCTURE["Normal"].copy(),
     "Deep": BODY_GROUP_STRUCTURE["Normal"].copy(),
+    "High": BODY_GROUP_STRUCTURE["Normal"].copy(),
     "Free_shell": BODY_GROUP_STRUCTURE["Free_shell"].copy()
 }
 
@@ -99,6 +100,7 @@ def process_timestep_worker(args):
         "Shallow": data["shallow_mask"] > 0,
         "Congestus": data["congestus_mask"] > 0,
         "Deep": data["deep_mask"] > 0,
+        "High": data["high_mask"] > 0,
         "Free_shell": data["free_shell_mask"] > 0
     }
 
@@ -411,6 +413,7 @@ if __name__ == '__main__':
         "shallow_mask": output_dir / "shallow_mask.nc",
         "congestus_mask": output_dir / "congestus_mask.nc",
         "deep_mask": output_dir / "deep_mask.nc",
+        "high_mask": output_dir / "high_mask.nc",
         "free_shell_mask": output_dir / "free_shell_mask.nc", #strictly for sanity check
         "cloud_labels": output_dir / "cloud_labels.nc",
         "shell_labels": output_dir / "shell_labels.nc",
@@ -431,6 +434,7 @@ if __name__ == '__main__':
         "shallow_mask": "shallow_mask",
         "congestus_mask": "congestus_mask",
         "deep_mask": "deep_mask",
+        "high_mask": "high_mask",
         "free_shell_mask": "shell_mask", #strictly for sanity check
         "cloud_labels": "cloud_labels",
         "shell_labels": "shell_labels",
@@ -520,7 +524,7 @@ if __name__ == '__main__':
                     for e_type_name in e_type_list:
                         body_grp.createVariable(
                             e_type_name, data_type, ("time", coord_dim_name),
-                            zlib=True, complevel=4, chunksizes=(1, axis_len)
+                            zlib=True, complevel=4, chunksizes=(1, axis_len), fill_value=np.nan
                         )
 
 
