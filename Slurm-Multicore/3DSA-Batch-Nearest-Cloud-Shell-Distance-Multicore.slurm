@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=4 #fallback to 4 cores if not specified by user
 #SBATCH --time=72:00:00
 #SBATCH --partition=long
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 #SBATCH --job-name=shell-dist-nql
 #SBATCH --output=/dev/null
