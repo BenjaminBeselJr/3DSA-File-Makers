@@ -239,7 +239,7 @@ if __name__ == '__main__':
     output_file = output_dir / "slab_averages_grouped.nc"
 
     # Define exact paths for files needed by workers
-    file_registry = {v: output_dir / f"{v}.nc" for v in PHYSICAL_VARS if v not in ["b_eff", "w", "qt", "ql", "thl"]}
+    file_registry = {v: output_dir / f"{v}.nc" for v in PHYSICAL_VARS if v not in ["b_eff", "w", "qt", "ql", "qv", "thl"]}
     file_registry["w"] = source_input_dir / "w.nc"
     file_registry["qt"] = source_input_dir / "qt.nc"
     file_registry["ql"] = source_input_dir / "ql.nc"

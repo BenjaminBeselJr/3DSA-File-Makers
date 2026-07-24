@@ -20,10 +20,10 @@ EXPORT_REGISTRY = {
 }
 
 DISTANCE_COORDS = {
-    "dist_shell_top": "Distance_from_shell_top",
+    "dist_shell_top": "distance_from_shell_top",
     "dist_cloud_top": "distance_from_cloud_top",
     "norm_cloud_base": "normalized_distance_from_cloud_base",
-    "norm_shell_base": "Normalized_distance_from_shell_base"
+    "norm_shell_base": "normalized_distance_from_shell_base"
 }
 
 NORMALIZED_STEP = 0.01
@@ -118,8 +118,8 @@ def process_timestep_worker(args):
     z_indices = np.arange(nz)
 
     distance_volumes = {}
-    for c_type, file_key in DISTANCE_COORDS.items():
-        distance_volumes[c_type] = data[file_key]
+    for short_key, filename in DISTANCE_COORDS.items():
+        distance_volumes[short_key] = data[short_key]
 
     sum_accumulator = {}
 
@@ -448,12 +448,12 @@ if __name__ == '__main__':
         "cloud_detrainment_air": "detrainment",
     }
 
-    for c_type, file_key in DISTANCE_COORDS.items():
-        file_paths[file_key] = output_dir / f"{file_key}.nc"
-        if "norm_" in c_type:
-            file_var_names[file_key] = "normalized_distance"
+    for short_key, filename in DISTANCE_COORDS.items():
+        file_paths[short_key] = output_dir / f"{filename}.nc"
+        if "norm_" in short_key:
+            file_var_names[short_key] = "normalized_distance"
         else:
-            file_var_names[file_key] = "distance"
+            file_var_names[short_key] = "distance"
 
     #Check that files exist
     for name, path in file_paths.items():
@@ -474,15 +474,15 @@ if __name__ == '__main__':
 
     print("Scanning data to determine spatial distance range bins...")
     global_coord_values = {"z_grid": z_vals}
-    for c_type, file_key in DISTANCE_COORDS.items():
-        with nc.Dataset(str(file_paths[file_key]), "r") as ds_dist:
-            subset = ds_dist.variables[file_var_names[file_key]][:]
-            if "norm_" in c_type:
+    for short_key, filename in DISTANCE_COORDS.items():
+        with nc.Dataset(str(file_paths[short_key]), "r") as ds_dist:
+            subset = ds_dist.variables[file_var_names[short_key]][:]
+            if "norm_" in short_key:
                 bin_min = np.floor(np.nanmin(subset) / NORMALIZED_STEP) * NORMALIZED_STEP
                 bin_max = np.ceil(np.nanmax(subset) / NORMALIZED_STEP) * NORMALIZED_STEP
-                global_coord_values[c_type] = np.arange(bin_min, bin_max + (NORMALIZED_STEP / 2.0), NORMALIZED_STEP, dtype=np.float32)
+                global_coord_values[short_key] = np.arange(bin_min, bin_max + (NORMALIZED_STEP / 2.0), NORMALIZED_STEP, dtype=np.float32)
             else:
-                global_coord_values[c_type] = np.unique(subset[~np.isnan(subset)]).astype(np.float32)
+                global_coord_values[short_key] = np.unique(subset[~np.isnan(subset)]).astype(np.float32)
 
     output_file = output_dir / "slab_entrainment_stats.nc"
     if output_file.exists():
